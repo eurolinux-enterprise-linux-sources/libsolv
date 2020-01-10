@@ -20,6 +20,7 @@ extern "C" {
 #define POLICY_MODE_RECOMMEND	1
 #define POLICY_MODE_SUGGEST	2
 #define POLICY_MODE_CHOOSE_NOREORDER	3	/* internal, do not use */
+#define POLICY_MODE_SUPPLEMENT	4	/* internal, do not use */
 
 
 #define POLICY_ILLEGAL_DOWNGRADE	1
@@ -39,6 +40,7 @@ extern void policy_create_obsolete_index(Solver *solv);
 
 /* internal, do not use */
 extern void prune_to_best_version(Pool *pool, Queue *plist);
+extern void policy_prefer_favored(Solver *solv, Queue *plist);
 
 
 #ifdef __cplusplus

@@ -15,50 +15,36 @@
   %bcond_without python3
 %endif
 %endif
-%bcond_with debian_repo
-%bcond_with arch_repo
-%bcond_with helix_repo
 # Creates special prefixed pseudo-packages from appdata metadata
 %bcond_with appdata
 # Creates special prefixed "group:", "category:" pseudo-packages
 %bcond_without comps
 # For rich dependencies
 %bcond_without complex_deps
+%if 0%{?rhel}
+%bcond_with helix_repo
+%bcond_with suse_repo
+%bcond_with debian_repo
+%bcond_with arch_repo
 # For handling deb + rpm at the same time
-%bcond_with multi_symantics
-
-%global _cmake_opts                               \\\
-    -DFEDORA=1                                    \\\
-    -DENABLE_RPMDB=ON                             \\\
-    -DENABLE_RPMDB_BYRPMHEADER=ON                 \\\
-    -DENABLE_RPMMD=ON                             \\\
-    %{?with_comps:-DENABLE_COMPS=ON}              \\\
-    %{?with_appdata:-DENABLE_APPDATA=ON}          \\\
-    -DUSE_VENDORDIRS=ON                           \\\
-    -DENABLE_LZMA_COMPRESSION=ON                  \\\
-    -DENABLE_BZIP2_COMPRESSION=ON                 \\\
-    %{?with_debian_repo:-DENABLE_DEBIAN=ON}       \\\
-    %{?with_arch_repo:-DENABLE_ARCHREPO=ON}       \\\
-    %{?with_helix_repo:-DENABLE_HELIXREPO=ON}     \\\
-    %{?with_multi_symantics:-DMULTI_SYMANTICS=ON} \\\
-    %{?with_complex_deps:-DENABLE_COMPLEX_DEPS=1} \\\
-    %{nil}
+%bcond_with multi_semantics
+%else
+%bcond_without helix_repo
+%bcond_without suse_repo
+%bcond_without debian_repo
+%bcond_without arch_repo
+# For handling deb + rpm at the same time
+%bcond_without multi_semantics
+%endif
 
 Name:           lib%{libname}
-Version:        0.6.20
-Release:        5%{?dist}
+Version:        0.6.26
+Release:        1%{?dist}
 Summary:        Package dependency solver
 
 License:        BSD
 URL:            https://github.com/openSUSE/libsolv
 Source0:        %{url}/archive/%{version}/%{name}-%{version}.tar.gz
-
-# https://bugzilla.redhat.com/show_bug.cgi?id=1318662
-# https://github.com/openSUSE/libsolv/commit/599c58bed474c2a68109ff0649f1effa7ff02c45
-Patch0:         0001-Fix-order-of-solv_extend-arguments-in-repo_add_rpmmd.patch
-# https://bugzilla.redhat.com/show_bug.cgi?id=1325471
-# https://github.com/openSUSE/libsolv/commit/b1014a431541444bcd39c6ec83c1ec935c7f0aae
-Patch1:         0001-Fix-supplements-handling-when-implicitobsoleteusesco.patch
 
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
@@ -96,12 +82,12 @@ Summary:        Package dependency solver tools
 Requires:       %{name}%{?_isa} = %{version}-%{release}
 Obsoletes:      %{name}-test < 0.6.11-2
 # repo2solv dependencies. All of those are used in shell-script.
-Requires:       /usr/bin/gzip
-Requires:       /usr/bin/bzip2
-Requires:       /usr/bin/lzma
-Requires:       /usr/bin/xz
-Requires:       /usr/bin/cat
-Requires:       /usr/bin/find
+Requires:       %{_bindir}/gzip
+Requires:       %{_bindir}/bzip2
+Requires:       %{_bindir}/lzma
+Requires:       %{_bindir}/xz
+Requires:       %{_bindir}/cat
+Requires:       %{_bindir}/find
 
 %description tools
 Package dependency solver tools.
@@ -110,8 +96,8 @@ Package dependency solver tools.
 Summary:        Applications demoing the %{name} library
 Requires:       %{name}%{?_isa} = %{version}-%{release}
 # solv dependencies. Used as execlp() and system()
-Requires:       /usr/bin/curl
-Requires:       /usr/bin/gpg2
+Requires:       %{_bindir}/curl
+Requires:       %{_bindir}/gpg2
 
 %description demo
 Applications demoing the %{name} library.
@@ -121,6 +107,7 @@ Applications demoing the %{name} library.
 Summary:        Perl bindings for the %{name} library
 BuildRequires:  swig
 BuildRequires:  perl-devel
+BuildRequires:  perl-generators
 Requires:       %{name}%{?_isa} = %{version}-%{release}
 
 %description -n perl-%{libname}
@@ -168,55 +155,42 @@ Python 3 version.
 
 %prep
 %autosetup -p1
-mkdir build build-py2 build-py3
+mkdir build
 
 %build
 pushd build
-  %cmake %_cmake_opts ../                   \
-    %{?with_perl_bindings:-DENABLE_PERL=ON} \
-    %{?with_ruby_bindings:-DENABLE_RUBY=ON} \
-    %{nil}
+  %cmake                                          \
+    -DFEDORA=1                                    \
+    -DENABLE_RPMDB=ON                             \
+    -DENABLE_RPMDB_BYRPMHEADER=ON                 \
+    -DENABLE_RPMMD=ON                             \
+    %{?with_comps:-DENABLE_COMPS=ON}              \
+    %{?with_appdata:-DENABLE_APPDATA=ON}          \
+    -DUSE_VENDORDIRS=ON                           \
+    -DENABLE_LZMA_COMPRESSION=ON                  \
+    -DENABLE_BZIP2_COMPRESSION=ON                 \
+    %{?with_helix_repo:-DENABLE_HELIXREPO=ON}     \
+    %{?with_suse_repo:-DENABLE_SUSEREPO=ON}       \
+    %{?with_debian_repo:-DENABLE_DEBIAN=ON}       \
+    %{?with_arch_repo:-DENABLE_ARCHREPO=ON}       \
+    %{?with_multi_semantics:-DMULTI_SEMANTICS=ON} \
+    %{?with_complex_deps:-DENABLE_COMPLEX_DEPS=1} \
+    %{?with_perl_bindings:-DENABLE_PERL=ON}       \
+    %{?with_ruby_bindings:-DENABLE_RUBY=ON}       \
+%if %{with python_bindings}
+    -DENABLE_PYTHON=ON                            \
+%if %{with python3}
+    -DENABLE_PYTHON3=ON                           \
+%endif
+%endif
+    ..
   %make_build
 popd
-
-%if %{with python_bindings}
-pushd build-py2
-  %cmake %_cmake_opts ../             \
-    -DENABLE_PYTHON=ON                \
-    -DPythonLibs_FIND_VERSION=2       \
-    -DPythonLibs_FIND_VERSION_MAJOR=2 \
-    %{nil}
-  make %{?_smp_mflags} bindings_python
-popd
-
-%if %{with python3}
-pushd build-py3
-  %cmake %_cmake_opts ../             \
-    -DENABLE_PYTHON=ON                \
-    -DPythonLibs_FIND_VERSION=3       \
-    -DPythonLibs_FIND_VERSION_MAJOR=3 \
-    %{nil}
-  make %{?_smp_mflags} bindings_python
-popd
-%endif
-%endif
 
 %install
 pushd build
   %make_install
 popd
-
-%if %{with python_bindings}
-pushd build-py2
-  %make_install
-popd
-
-%if %{with python3}
-pushd build-py3
-  %make_install
-popd
-%endif
-%endif
 
 mv %{buildroot}%{_bindir}/repo2solv.sh %{buildroot}%{_bindir}/repo2solv
 
@@ -240,6 +214,7 @@ popd
 %{_libdir}/%{name}ext.so
 %{_includedir}/%{libname}/
 %{_libdir}/pkgconfig/%{name}.pc
+%{_libdir}/pkgconfig/%{name}ext.pc
 # Own directory because we don't want to depend on cmake
 %dir %{_datadir}/cmake/Modules/
 %{_datadir}/cmake/Modules/FindLibSolv.cmake
@@ -277,6 +252,10 @@ popd
 %if %{with helix_repo}
   %solv_tool helix2solv
 %endif
+%if %{with suse_repo}
+  %solv_tool susetags2solv
+%endif
+
 %{_bindir}/repo2solv
 
 %files demo
@@ -307,6 +286,15 @@ popd
 %endif
 
 %changelog
+* Sun Feb 19 2017 Igor Gnatenko <ignatenko@redhat.com> - 0.6.26-1
+- Update to 0.6.26
+
+* Tue Feb 07 2017 Igor Gnatenko <ignatenko@redhat.com> - 0.6.25-1
+- Update to 0.6.25
+
+* Fri Nov 11 2016 Igor Gnatenko <ignatenko@redhat.com> - 0.6.24-1
+- Update to 0.6.24
+
 * Tue Jul 12 2016 Igor Gnatenko <ignatenko@redhat.com> - 0.6.20-5
 - Make obsoletes non-architecture dependent (RHBZ #1354479)
 

@@ -634,7 +634,7 @@ typedef int bool;
 #include "selection.h"
 
 #include "repo_write.h"
-#ifdef ENABLE_RPMDB
+#if defined(ENABLE_RPMDB) || defined(ENABLE_RPMPKG)
 #include "repo_rpmdb.h"
 #endif
 #ifdef ENABLE_PUBKEY
@@ -1172,6 +1172,8 @@ typedef struct {
   static const Id SOLVER_DROP_ORPHANED = SOLVER_DROP_ORPHANED;
   static const Id SOLVER_USERINSTALLED = SOLVER_USERINSTALLED;
   static const Id SOLVER_ALLOWUNINSTALL = SOLVER_ALLOWUNINSTALL;
+  static const Id SOLVER_FAVOR = SOLVER_FAVOR;
+  static const Id SOLVER_DISFAVOR = SOLVER_DISFAVOR;
   static const Id SOLVER_JOBMASK = SOLVER_JOBMASK;
   static const Id SOLVER_WEAK = SOLVER_WEAK;
   static const Id SOLVER_ESSENTIAL = SOLVER_ESSENTIAL;
@@ -1468,10 +1470,17 @@ typedef struct {
   static const int POOL_FLAG_NOINSTALLEDOBSOLETES = POOL_FLAG_NOINSTALLEDOBSOLETES;
   static const int POOL_FLAG_HAVEDISTEPOCH = POOL_FLAG_HAVEDISTEPOCH;
   static const int POOL_FLAG_NOOBSOLETESMULTIVERSION = POOL_FLAG_NOOBSOLETESMULTIVERSION;
+  static const int DISTTYPE_RPM = DISTTYPE_RPM;
+  static const int DISTTYPE_DEB = DISTTYPE_DEB;
+  static const int DISTTYPE_ARCH = DISTTYPE_ARCH;
+  static const int DISTTYPE_HAIKU = DISTTYPE_HAIKU;
 
   Pool() {
     Pool *pool = pool_create();
     return pool;
+  }
+  int setdisttype(int disttype) {
+    return pool_setdisttype($self, disttype);
   }
   void set_debuglevel(int level) {
     pool_setdebuglevel($self, level);
@@ -1981,6 +1990,8 @@ rb_eval_string(
   bool add_rpmdb_reffp(FILE *reffp, int flags = 0) {
     return repo_add_rpmdb_reffp($self, reffp, flags) == 0;
   }
+#endif
+#ifdef ENABLE_RPMPKG
   %newobject add_rpm;
   XSolvable *add_rpm(const char *name, int flags = 0) {
     return new_XSolvable($self->pool, repo_add_rpm($self, name, flags));
@@ -2176,6 +2187,34 @@ rb_eval_string(
     return new_XSolvable($self->pool, repo_find_pubkey($self, keyid));
   }
 #endif
+
+  Repo *createshadow(const char *name) {
+    Repo *repo = repo_create($self->pool, name);
+    if ($self->idarraysize) {
+      repo_reserve_ids(repo, 0, $self->idarraysize);
+      memcpy(repo->idarraydata, $self->idarraydata, sizeof(Id) * $self->idarraysize);
+      repo->idarraysize = $self->idarraysize;
+    }
+    repo->start = $self->start;
+    repo->end = $self->end;
+    repo->nsolvables = $self->nsolvables;
+    return repo;
+  }
+
+  void moveshadow(Queue q) {
+    Pool *pool = $self->pool;
+    int i;
+    for (i = 0; i < q.count; i++) {
+      Solvable *s;
+      Id p = q.elements[i];
+      if (p < $self->start || p >= $self->end)
+        continue;
+      s = pool->solvables + p;
+      if ($self->idarraysize != s->repo->idarraysize)
+        continue;
+      s->repo = $self;
+    }
+  }
 
 #if defined(SWIGTCL)
   %rename("==") __eq__;
@@ -2952,6 +2991,12 @@ rb_eval_string(
   int evrcmp(XSolvable *s2) {
     return pool_evrcmp($self->pool, $self->pool->solvables[$self->id].evr, s2->pool->solvables[s2->id].evr, EVRCMP_COMPARE);
   }
+#ifdef SWIGRUBY
+  %rename("matchesdep?") matchesdep;
+#endif
+  bool matchesdep(Id keyname, DepId id, Id marker = -1) {
+    return solvable_matchesdep($self->pool->solvables + $self->id, keyname, id, marker);
+  }
 
 #if defined(SWIGTCL)
   %rename("==") __eq__;
@@ -3269,6 +3314,9 @@ rb_eval_string(
   static const int SOLVER_FLAG_FOCUS_INSTALLED = SOLVER_FLAG_FOCUS_INSTALLED;
   static const int SOLVER_FLAG_YUM_OBSOLETES = SOLVER_FLAG_YUM_OBSOLETES;
   static const int SOLVER_FLAG_NEED_UPDATEPROVIDE = SOLVER_FLAG_NEED_UPDATEPROVIDE;
+  static const int SOLVER_FLAG_FOCUS_BEST = SOLVER_FLAG_FOCUS_BEST;
+  static const int SOLVER_FLAG_STRONG_RECOMMENDS = SOLVER_FLAG_STRONG_RECOMMENDS;
+  static const int SOLVER_FLAG_INSTALL_ALSO_UPDATES = SOLVER_FLAG_INSTALL_ALSO_UPDATES;
 
   static const int SOLVER_REASON_UNRELATED = SOLVER_REASON_UNRELATED;
   static const int SOLVER_REASON_UNIT_RULE = SOLVER_REASON_UNIT_RULE;
@@ -3438,6 +3486,21 @@ rb_eval_string(
 
   bool write_testcase(const char *dir) {
     return testcase_write($self, dir, TESTCASE_RESULT_TRANSACTION | TESTCASE_RESULT_PROBLEMS, 0, 0);
+  }
+
+  Queue raw_decisions(int filter=0) {
+    Queue q;
+    queue_init(&q);
+    solver_get_decisionqueue($self, &q);
+    if (filter) {
+      int i, j;
+      for (i = j = 0; i < q.count; i++)
+        if ((filter > 0 && q.elements[i] > 1) ||
+            (filter < 0 && q.elements[i] < 0))
+          q.elements[j++] = q.elements[i];
+      queue_truncate(&q, j);
+    }
+    return q;
   }
 }
 

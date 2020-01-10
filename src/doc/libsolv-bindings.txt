@@ -1400,19 +1400,26 @@ Return true if the solvable is installed on the system.
 
 	bool identical(Solvable *other)
 	$solvable->identical($other)
-	$solvable.identical(other)
-	$solvable.identical?(other)
+	solvable.identical(other)
+	solvable.identical?(other)
 
 Return true if the two solvables are identical.
 
 	int evrcmp(Solvable *other)
-	$solvable->evrcmp(other)
-	$solvable.evrcmp(other)
-	$solvable.evrcmp(other)
+	$solvable->evrcmp($other)
+	solvable.evrcmp(other)
+	solvable.evrcmp(other)
 
 Returns -1 if the epoch/version/release of the solvable is less than the
 one from the other solvable, 1 if it is greater, and 0 if they are equal.
 Note that "equal" does not mean that the evr is identical.
+
+	int matchesdep(Id keyname, DepId id, Id marker = -1)
+	$solvable->matchesdep($keyname, $dep)
+	solvable.matchesdep(keyname, dep)
+	solvable.matchesdep?(keyname, dep)
+
+Return true if the dependencies stored in keyname match the specified dependeny.
 
 	Selection Selection(int setflags = 0)
 	my $sel = $solvable->Selection();
@@ -1878,6 +1885,16 @@ Allow the solver to deinstall the matching installed packages if they get
 into the way of resolving a dependency. This is like the
 SOLVER_FLAG_ALLOW_UNINSTALL flag, but limited to a specific set of packages.
 
+*SOLVER_FAVOR*::
+Prefer the specified packages if the solver encounters an alternative. If
+a job contains multiple matching favor/disfavor elements, the last one takes
+precedence.
+
+*SOLVER_DISFAVOR*::
+Avoid the specified packages if the solver encounters an alternative. This
+can also be used to block recommended or supplemented packages from being
+installed.
+
 *SOLVER_JOBMASK*::
 A mask containing all the above action bits.
 
@@ -2110,6 +2127,11 @@ packages that also obsolete the package but are not considered for
 updating. If you cannot use this feature, you can turn it off
 by setting this flag.
 
+*SOLVER_FLAG_NEED_UPDATEPROVIDE*::
+This is somewhat the opposite of SOLVER_FLAG_NO_UPDATEPROVIDE: Only
+packages that provied the installed package names are considered
+for updating.
+
 *SOLVER_FLAG_SPLITPROVIDES*::
 Make the solver aware of special provides of the form
 ``<packagename>:<path>'' used in SUSE systems to support package
@@ -2152,10 +2174,30 @@ of resolving non-orphaned ones. Setting the flag might result
 in no longer working packages in case they are orphaned.
 
 *SOLVER_FLAG_FOCUS_INSTALLED*::
-Resolve installed packages before resolving the given job.
+Resolve installed packages before resolving the given jobs.
 Setting this flag means that the solver will prefer picking
 a package version that fits the other installed packages
 over updating installed packages.
+
+*SOLVER_FLAG_FOCUS_BEST*::
+First resolve the given jobs, then the dependencies of the
+resulting packages, then resolve all already installed
+packages. This will result in more packages being updated
+as when the flag is not used.
+
+*SOLVER_FLAG_INSTALL_ALSO_UPDATES*::
+Update the package if a job is already fulfilled by an installed
+package.
+
+*SOLVER_FLAG_YUM_OBSOLETES*::
+Turn on yum-like package split handling. See the yum documentation
+for more details.
+
+*SOLVER_FLAG_URPM_REORDER*::
+Turn on urpm like package reordering for kernel packages. See
+the urpm documentation for more details.
+
+
 
 Basic rule types:
 

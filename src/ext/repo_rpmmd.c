@@ -651,13 +651,13 @@ put_in_cshash(struct parsedata *pd, const unsigned char *key, int keyl, Id id)
       while (ht[h])
 	{
 	  unsigned char *d = pd->csdata + ht[h];
-	  if (d[-1] == keyl && !memcmp(key, d, keyl))
+	  if (d[-1] == keyl - 1 && !memcmp(key, d, keyl))
 	    return;		/* XXX: first id wins... */
 	  h = HASHCHAIN_NEXT(h, hh, hm);
 	}
     }
   /* a new entry. put in csdata */
-  pd->csdata = solv_extend(pd->csdata, pd->ncsdata, 1, 1 + keyl + sizeof(Id), 4095);
+  pd->csdata = solv_extend(pd->csdata, pd->ncsdata, 1 + keyl + sizeof(Id), 1, 4095);
   d = pd->csdata + pd->ncsdata;
   d[0] = keyl - 1;
   memcpy(d + 1, key, keyl);
@@ -1119,8 +1119,7 @@ endElement(void *userData, const char *name)
         s->evr = ID_EMPTY;	/* some patterns have this */
       if (s->name && s->arch != ARCH_SRC && s->arch != ARCH_NOSRC)
         s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
-      s->supplements = repo_fix_supplements(repo, s->provides, s->supplements, pd->freshens);
-      s->conflicts = repo_fix_conflicts(repo, s->conflicts);
+      repo_rewrite_suse_deps(s, pd->freshens);
       pd->freshens = 0;
       pd->kind = 0;
       pd->solvable = 0;

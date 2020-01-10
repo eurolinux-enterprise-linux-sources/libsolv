@@ -46,6 +46,8 @@ static struct job2str {
   { SOLVER_DROP_ORPHANED,  "droporphaned" },
   { SOLVER_USERINSTALLED,  "userinstalled" },
   { SOLVER_ALLOWUNINSTALL, "allowuninstall" },
+  { SOLVER_FAVOR,          "favor" },
+  { SOLVER_DISFAVOR,       "disfavor" },
   { 0, 0 }
 };
 
@@ -81,6 +83,7 @@ static struct resultflags2str {
   { TESTCASE_RESULT_ALTERNATIVES,	"alternatives" },
   { TESTCASE_RESULT_RULES,		"rules" },
   { TESTCASE_RESULT_GENID,		"genid" },
+  { TESTCASE_RESULT_REASON,		"reason" },
   { 0, 0 }
 };
 
@@ -111,6 +114,10 @@ static struct solverflags2str {
   { SOLVER_FLAG_FOCUS_INSTALLED,            "focusinstalled", 0 },
   { SOLVER_FLAG_YUM_OBSOLETES,              "yumobsoletes", 0 },
   { SOLVER_FLAG_NEED_UPDATEPROVIDE,         "needupdateprovide", 0 },
+  { SOLVER_FLAG_URPM_REORDER,               "urpmreorder", 0 },
+  { SOLVER_FLAG_FOCUS_BEST,                 "focusbest", 0 },
+  { SOLVER_FLAG_STRONG_RECOMMENDS,          "strongrecommends", 0 },
+  { SOLVER_FLAG_INSTALL_ALSO_UPDATES,       "installalsoupdates", 0 },
   { 0, 0, 0 }
 };
 
@@ -763,6 +770,7 @@ testcase_str2solvid(Pool *pool, const char *str)
 	  evrid = pool_strn2id(pool, str + i + 1, repostart - (i + 1), 0);
 	  if (!evrid)
 	    continue;
+	  /* first check whatprovides */
 	  FOR_PROVIDES(p, pp, nid)
 	    {
 	      Solvable *s = pool->solvables + p;
@@ -773,6 +781,31 @@ testcase_str2solvid(Pool *pool, const char *str)
 	      if (arch && s->arch != arch)
 		continue;
 	      return p;
+	    }
+	  /* maybe it's not installable and thus not in whatprovides. do a slow search */
+	  if (repo)
+	    {
+	      Solvable *s;
+	      FOR_REPO_SOLVABLES(repo, p, s)
+		{
+		  if (s->name != nid || s->evr != evrid)
+		    continue;
+		  if (arch && s->arch != arch)
+		    continue;
+		  return p;
+		}
+	    }
+	  else
+	    {
+	      FOR_POOL_SOLVABLES(p)
+		{
+		  Solvable *s = pool->solvables + p;
+		  if (s->name != nid || s->evr != evrid)
+		    continue;
+		  if (arch && s->arch != arch)
+		    continue;
+		  return p;
+		}
 	    }
 	}
     }
@@ -1260,8 +1293,7 @@ finish_v2_solvable(Pool *pool, Repodata *data, Solvable *s, char *filelist, int 
 	  repodata_add_dirstr(data, s - pool->solvables, SOLVABLE_FILELIST, did, p);
 	}
     }
-  s->supplements = repo_fix_supplements(s->repo, s->provides, s->supplements, 0);
-  s->conflicts = repo_fix_conflicts(s->repo, s->conflicts);
+  repo_rewrite_suse_deps(s, 0);
 }
 
 /* stripped down version of susetags parser used for testcases */
@@ -1553,7 +1585,11 @@ testcase_setsolverflags(Solver *solv, const char *str)
 	  pool_debug(solv->pool, SOLV_ERROR, "setsolverflags: unknown flag '%.*s'\n", (int)(p - s), s);
 	  return 0;
 	}
-      solver_set_flag(solv, solverflags2str[i].flag, v);
+      if (solver_set_flag(solv, solverflags2str[i].flag, v) == -1)
+	{
+	  pool_debug(solv->pool, SOLV_ERROR, "setsolverflags: unsupported flag '%s'\n", solverflags2str[i].str);
+	  return 0;
+	}
     }
   return 1;
 }
@@ -1699,6 +1735,62 @@ static struct class2str {
   { SOLVER_TRANSACTION_MULTIREINSTALL, "multireinstall" },
   { 0, 0 }
 };
+
+static struct reason2str {
+  Id reason;
+  const char *str;
+} reason2str[] = {
+  { SOLVER_REASON_UNRELATED,		"unrelated" },
+  { SOLVER_REASON_UNIT_RULE,		"unit" },
+  { SOLVER_REASON_KEEP_INSTALLED,	"keep" },
+  { SOLVER_REASON_RESOLVE_JOB,		"job" },
+  { SOLVER_REASON_UPDATE_INSTALLED,	"update" },
+  { SOLVER_REASON_CLEANDEPS_ERASE,	"cleandeps" },
+  { SOLVER_REASON_RESOLVE,		"resolve" },
+  { SOLVER_REASON_WEAKDEP,		"weakdep" },
+  { SOLVER_REASON_RESOLVE_ORPHAN,	"orphan" },
+
+  { SOLVER_REASON_RECOMMENDED,		"recommended" },
+  { SOLVER_REASON_SUPPLEMENTED,		"supplemented" },
+  { 0, 0 }
+};
+
+static const char *
+testcase_reason2str(Id reason)
+{
+  int i;
+  for (i = 0; reason2str[i].str; i++)
+    if (reason == reason2str[i].reason)
+      return reason2str[i].str;
+  return "?";
+}
+
+static struct rclass2str {
+  Id rclass;
+  const char *str;
+} rclass2str[] = {
+  { SOLVER_RULE_PKG, "pkg" },
+  { SOLVER_RULE_UPDATE, "update" },
+  { SOLVER_RULE_FEATURE, "feature" },
+  { SOLVER_RULE_JOB, "job" },
+  { SOLVER_RULE_DISTUPGRADE, "distupgrade" },
+  { SOLVER_RULE_INFARCH, "infarch" },
+  { SOLVER_RULE_CHOICE, "choice" },
+  { SOLVER_RULE_LEARNT, "learnt" },
+  { SOLVER_RULE_BEST, "best" },
+  { SOLVER_RULE_YUMOBS, "yumobs" },
+  { 0, 0 }
+};
+
+static const char *
+testcase_rclass2str(Id rclass)
+{
+  int i;
+  for (i = 0; rclass2str[i].str; i++)
+    if (rclass == rclass2str[i].rclass)
+      return rclass2str[i].str;
+  return "unknown";
+}
 
 static int
 dump_genid(Pool *pool, Strqueue *sq, Id id, int cnt)
@@ -1944,44 +2036,8 @@ testcase_solverresult(Solver *solv, int resultflags)
       queue_init(&q);
       for (rid = 1; (rclass = solver_ruleclass(solv, rid)) != SOLVER_RULE_UNKNOWN; rid++)
 	{
-	  char *prefix;
-	  switch (rclass)
-	    {
-	    case SOLVER_RULE_PKG:
-	      prefix = "pkg ";
-	      break;
-	    case SOLVER_RULE_UPDATE:
-	      prefix = "update ";
-	      break;
-	    case SOLVER_RULE_FEATURE:
-	      prefix = "feature ";
-	      break;
-	    case SOLVER_RULE_JOB:
-	      prefix = "job ";
-	      break;
-	    case SOLVER_RULE_DISTUPGRADE:
-	      prefix = "distupgrade ";
-	      break;
-	    case SOLVER_RULE_INFARCH:
-	      prefix = "infarch ";
-	      break;
-	    case SOLVER_RULE_CHOICE:
-	      prefix = "choice ";
-	      break;
-	    case SOLVER_RULE_LEARNT:
-	      prefix = "learnt ";
-	      break;
-	    case SOLVER_RULE_BEST:
-	      prefix = "best ";
-	      break;
-	    case SOLVER_RULE_YUMOBS:
-	      prefix = "yumobs ";
-	      break;
-	    default:
-	      prefix = "unknown ";
-	      break;
-	    }
-	  prefix = solv_dupjoin("rule ", prefix, testcase_ruleid(solv, rid));
+	  char *prefix = solv_dupjoin("rule ", testcase_rclass2str(rclass), " ");
+	  prefix = solv_dupappend(prefix, testcase_ruleid(solv, rid), 0);
 	  solver_ruleliterals(solv, rid, &q);
 	  if (rclass == SOLVER_RULE_FEATURE && q.count == 1 && q.elements[0] == -SYSTEMSOLVABLE)
 	    continue;
@@ -2017,6 +2073,44 @@ testcase_solverresult(Solver *solv, int resultflags)
 	  dump_genid(pool, &sq, id, 1);
 	}
     }
+  if ((resultflags & TESTCASE_RESULT_REASON) != 0)
+    {
+      Queue whyq;
+      queue_init(&whyq);
+      FOR_POOL_SOLVABLES(p)
+	{
+	  Id info, p2, id;
+          int reason = solver_describe_decision(solv, p, &info);
+	  if (reason == SOLVER_REASON_UNRELATED)
+	    continue;
+	  if (reason == SOLVER_REASON_WEAKDEP)
+	    {
+	      solver_describe_weakdep_decision(solv, p, &whyq);
+	      if (whyq.count)
+		{
+		  for (i = 0; i < whyq.count; i += 3)
+		    {
+		      reason = whyq.elements[i];
+		      p2 = whyq.elements[i + 1];
+		      id = whyq.elements[i + 2];
+		      s = pool_tmpjoin(pool, "reason ", testcase_solvid2str(pool, p), 0);
+		      s = pool_tmpappend(pool, s, " ", testcase_reason2str(reason));
+		      s = pool_tmpappend(pool, s, " ", testcase_dep2str(pool, id));
+		      if (p2)
+		        s = pool_tmpappend(pool, s, " ", testcase_solvid2str(pool, p2));
+		      strqueue_push(&sq, s);
+		    }
+		  continue;
+		}
+	    }
+	  s = pool_tmpjoin(pool, "reason ", testcase_solvid2str(pool, p), 0);
+	  s = pool_tmpappend(pool, s, " ", testcase_reason2str(reason));
+	  if (info)
+	    s = pool_tmpappend(pool, s, " ", testcase_ruleid(solv, info));
+	  strqueue_push(&sq, s);
+	}
+      queue_free(&whyq);
+    }
   strqueue_sort(&sq);
   result = strqueue_join(&sq);
   strqueue_free(&sq);
@@ -2024,8 +2118,8 @@ testcase_solverresult(Solver *solv, int resultflags)
 }
 
 
-int
-testcase_write(Solver *solv, const char *dir, int resultflags, const char *testcasename, const char *resultname)
+static int
+testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const char *testcasename, const char *resultname)
 {
   Pool *pool = solv->pool;
   Repo *repo;
@@ -2057,6 +2151,9 @@ testcase_write(Solver *solv, const char *dir, int resultflags, const char *testc
       else
 	sprintf(priobuf, "%d", repo->priority);
       out = pool_tmpjoin(pool, name, ".repo", ".gz");
+      for (i = 0; out[i]; i++)
+	if (out[i] == '/')
+	  out[i] = '_';
       cmd = pool_tmpjoin(pool, "repo ", name, " ");
       cmd = pool_tmpappend(pool, cmd, priobuf, " ");
       cmd = pool_tmpappend(pool, cmd, "testtags ", out);
@@ -2245,6 +2342,52 @@ testcase_write(Solver *solv, const char *dir, int resultflags, const char *testc
   return 1;
 }
 
+int
+testcase_write(Solver *solv, const char *dir, int resultflags, const char *testcasename, const char *resultname)
+{
+  Pool *pool = solv->pool;
+  int i, r, repoid;
+  int mangle = 1;
+  const char **orignames;
+
+  /* mangle repo names so that there are no conflicts */
+  orignames = solv_calloc(pool->nrepos, sizeof(char *));
+  for (repoid = 1; repoid < pool->nrepos; repoid++)
+    {
+      Repo *repo = pool_id2repo(pool, repoid);
+      char *buf = solv_malloc((repo->name ? strlen(repo->name) : 0) + 40);
+      char *mp;
+      orignames[repoid] = repo->name;
+      if (!repo->name || !repo->name[0])
+        sprintf(buf, "#%d", repoid);
+      else
+	strcpy(buf, repo->name);
+      for (i = 0; buf[i]; i++)
+	if (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '/')
+	  buf[i] = '_';
+      mp = buf + strlen(buf);
+      for (;;)
+	{
+	  for (i = 1; i < repoid; i++)
+	    if (!strcmp(buf, pool_id2repo(pool, i)->name))
+	      break;
+	  if (i == repoid)
+	    break;
+          sprintf(mp, "_%d", mangle++);
+	}
+      repo->name = buf;
+    }
+  r = testcase_write_mangled(solv, dir, resultflags, testcasename, resultname);
+  for (repoid = 1; repoid < pool->nrepos; repoid++)
+    {
+      Repo *repo = pool_id2repo(pool, repoid);
+      solv_free((void *)repo->name);
+      repo->name = orignames[repoid];
+    }
+  solv_free(orignames);
+  return r;
+}
+
 static char *
 read_inline_file(FILE *fp, char **bufp, char **bufpp, int *buflp)
 {
@@ -2366,6 +2509,7 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
   int missing_features = 0;
   Id *genid = 0;
   int ngenid = 0;
+  Queue autoinstq;
 
   if (!fp && !(fp = fopen(testcase, "r")))
     {
@@ -2381,6 +2525,7 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
   buf = solv_malloc(bufl);
   bufp = buf;
   solv = 0;
+  queue_init(&autoinstq);
   for (;;)
     {
       if (bufp - buf + 16 > bufl)
@@ -2735,6 +2880,15 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 	    }
 	  genid[ngenid++] = id;
 	}
+      else if (!strcmp(pieces[0], "autoinst") && npieces > 2)
+	{
+	  if (strcmp(pieces[1], "name"))
+	    {
+	      pool_debug(pool, SOLV_ERROR, "testcase_read: autoinst: illegal mode\n");
+	      break;
+	    }
+	  queue_push(&autoinstq, pool_str2id(pool, pieces[2], 1));
+	}
       else
 	{
 	  pool_debug(pool, SOLV_ERROR, "testcase_read: cannot parse command '%s'\n", pieces[0]);
@@ -2742,6 +2896,9 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
     }
   while (job && ngenid > 0)
     queue_push2(job, SOLVER_NOOP | SOLVER_SOLVABLE_PROVIDES, genid[--ngenid]);
+  if (autoinstq.count)
+    pool_add_userinstalled_jobs(pool, &autoinstq, job, GET_USERINSTALLED_NAMES | GET_USERINSTALLED_INVERTED);
+  queue_free(&autoinstq);
   genid = solv_free(genid);
   buf = solv_free(buf);
   pieces = solv_free(pieces);

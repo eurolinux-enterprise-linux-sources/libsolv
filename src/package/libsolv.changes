@@ -1,4 +1,71 @@
 -------------------------------------------------------------------
+Wed Feb 15 11:34:59 CET 2017 - mls@suse.de
+
+- export solvable_matchesdep function, as we now use it in
+  the bindings
+- bump version to 0.6.26
+
+-------------------------------------------------------------------
+Tue Feb  7 13:13:01 CET 2017 - mls@suse.de
+
+- add SOLVABLE_NAME hack for pool_whatmatchesdep and
+  solvable_matchesdep
+- add SOLVER_FLAG_STRONG_RECOMMENDS option
+- add SOLVER_FLAG_INSTALL_ALSO_UPDATES option
+- do not special case release-less provides in sort_by_common_dep
+- solver_problemruleinfo2str: return reason why a package is not
+  installable
+- guard against dirpool_add_dir being called with an illegal
+  component id
+- reject solv files with bad directories
+- bump version to 0.6.25
+
+-------------------------------------------------------------------
+Thu Nov 10 15:09:25 CET 2016 - mls@suse.de
+
+- make testcase_str2solvid work with ignored packages
+- improve checks against corrupt rpm 
+- add SOLVER_FLAG_FOCUS_BEST solver flag
+- rework susetags multi-line handling [bnc#1007273]
+- build both for python2 and python3
+- bump version to 0.6.24
+
+-------------------------------------------------------------------
+Fri Jul 22 11:37:23 CEST 2016 - mls@suse.de
+
+- also scan /usr/share/metainfo for appdata files [bnc#989830]
+- support tri-state product-endoflife [fate#320699]
+- take lockstep into account when calculating unneeded packages
+- ignore appplication extensions for now in appdata parser
+  [bnc#984332]
+- add enabled features to solvversion.h
+- take disfavors into account when auto-minimizing for recommended
+  packages
+- change cleandeps code so that it keeps all providers
+- make sure that all repos have different names in a testcase
+- bump version to 0.6.23
+
+-------------------------------------------------------------------
+Tue Jun  7 11:24:47 CEST 2016 - mls@suse.de
+
+- fix bug in ignoreinst logic [bnc#983141]
+
+-------------------------------------------------------------------
+Wed May 18 15:09:56 CEST 2016 - mls@suse.de
+
+- add pool->setdisttype to the bindings
+- fix error in repo_deb that could lead to missing packages
+- add reason testing to testcase code
+- add pool_whatcontainsdep, selection_make_matchdepid, and
+  SELECTION_MATCH_DEPSTR
+- add SOLVER_FAVOR and SOLVER_DISFAVOR job types
+- allow unknown archs in pool_setarch
+- add the SOLVER_FLAG_URPM_REORDER solver flag
+- fix segfault in cshash dedup code [bnc#980901]
+- fix supplements handling when implicitobsoleteusescolors is set
+- bump version to 0.6.21
+
+-------------------------------------------------------------------
 Fri Apr  8 15:36:21 CEST 2016 - mls@suse.de
 
 - Better support of complex deps in pool_match_dep and

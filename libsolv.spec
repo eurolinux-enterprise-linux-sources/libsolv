@@ -1,16 +1,15 @@
 %global libname solv
 
+%bcond_without python_bindings
 %if 0%{?rhel} && 0%{?rhel} <= 7
 %bcond_with perl_bindings
 %bcond_with ruby_bindings
-%bcond_with python_bindings
 %if %{with python_bindings}
   %bcond_with python3
 %endif
 %else
 %bcond_without perl_bindings
 %bcond_without ruby_bindings
-%bcond_without python_bindings
 %if %{with python_bindings}
   %bcond_without python3
 %endif
@@ -39,7 +38,7 @@
 
 Name:           lib%{libname}
 Version:        0.6.26
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Package dependency solver
 
 License:        BSD
@@ -286,6 +285,9 @@ popd
 %endif
 
 %changelog
+* Fri Sep 22 2017 Igor Gnatenko <ignatenko@redhat.com> - 0.6.26-2
+- Enable python bindings
+
 * Sun Feb 19 2017 Igor Gnatenko <ignatenko@redhat.com> - 0.6.26-1
 - Update to 0.6.26
 

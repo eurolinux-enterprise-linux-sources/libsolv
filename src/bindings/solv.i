@@ -330,7 +330,8 @@ typedef struct {
 
 #if defined(SWIGPERL)
 
-/* work around a swig bug */
+/* work around a swig bug for swig versions < 2.0.5 */
+#if SWIG_VERSION < 0x020005
 %{
 #undef SWIG_CALLXS
 #ifdef PERL_OBJECT
@@ -343,6 +344,7 @@ typedef struct {
 #  endif
 #endif
 %}
+#endif
 
 
 %define perliter(class)
@@ -663,6 +665,9 @@ typedef int bool;
 #ifdef SUSE
 #include "repo_autopattern.h"
 #endif
+#if defined(ENABLE_COMPLEX_DEPS) && (defined(ENABLE_SUSEREPO) || defined(ENABLE_RPMMD) || defined(ENABLE_RPMDB) || defined(ENABLE_RPMPKG))
+#include "pool_parserpmrichdep.h"
+#endif
 #include "solv_xfopen.h"
 #include "testcase.h"
 
@@ -932,12 +937,20 @@ typedef int Id;
 %constant int REL_EQ;
 %constant int REL_GT;
 %constant int REL_LT;
-%constant int REL_ARCH;
 %constant int REL_AND;
 %constant int REL_OR;
 %constant int REL_WITH;
+%constant int REL_NAMESPACE;
+%constant int REL_ARCH;
+%constant int REL_FILECONFLICT;
 %constant int REL_COND;
+%constant int REL_COMPAT;
+%constant int REL_KIND;
+%constant int REL_MULTIARCH;
 %constant int REL_ELSE;
+%constant int REL_ERROR;
+%constant int REL_WITHOUT;
+%constant int REL_UNLESS;
 
 typedef struct {
   Pool* const pool;
@@ -1251,8 +1264,18 @@ typedef struct {
   static const Id SELECTION_GLOB = SELECTION_GLOB;
   static const Id SELECTION_FLAT = SELECTION_FLAT;
   static const Id SELECTION_NOCASE = SELECTION_NOCASE;
+  static const Id SELECTION_SKIP_KIND = SELECTION_SKIP_KIND;
+  static const Id SELECTION_MATCH_DEPSTR = SELECTION_MATCH_DEPSTR;
   static const Id SELECTION_SOURCE_ONLY = SELECTION_SOURCE_ONLY;
   static const Id SELECTION_WITH_SOURCE = SELECTION_WITH_SOURCE;
+  static const Id SELECTION_WITH_DISABLED = SELECTION_WITH_DISABLED;
+  static const Id SELECTION_WITH_BADARCH = SELECTION_WITH_BADARCH;
+  static const Id SELECTION_WITH_ALL = SELECTION_WITH_ALL;
+  static const Id SELECTION_ADD = SELECTION_ADD;
+  static const Id SELECTION_SUBTRACT = SELECTION_SUBTRACT;
+  static const Id SELECTION_FILTER = SELECTION_FILTER;
+  static const Id SELECTION_FILTER_KEEP_IFEMPTY = SELECTION_FILTER_KEEP_IFEMPTY;
+  static const Id SELECTION_FILTER_SWAPPED = SELECTION_FILTER_SWAPPED;
 
   Selection(Pool *pool) {
     Selection *s;
@@ -1274,6 +1297,13 @@ typedef struct {
   bool isempty() {
     return $self->q.count == 0;
   }
+  %newobject clone;
+  Selection *clone(int flags = 0) {
+    Selection *s = new_Selection($self->pool);
+    queue_init_clone(&s->q, &$self->q);
+    s->flags = $self->flags;
+    return s;
+  }
   void filter(Selection *lsel) {
     if ($self->pool != lsel->pool)
       queue_empty(&$self->q);
@@ -1290,6 +1320,27 @@ typedef struct {
   void add_raw(Id how, Id what) {
     queue_push2(&$self->q, how, what);
   }
+  void subtract(Selection *lsel) {
+    if ($self->pool == lsel->pool)
+      selection_subtract($self->pool, &$self->q, &lsel->q);
+  }
+  
+  void select(const char *name, int flags) {
+    if ((flags & SELECTION_MODEBITS) == 0)
+      flags |= SELECTION_FILTER | SELECTION_WITH_ALL;
+    $self->flags = selection_make($self->pool, &$self->q, name, flags);
+  }
+  void matchdeps(const char *name, int flags, Id keyname, Id marker = -1) {
+    if ((flags & SELECTION_MODEBITS) == 0)
+      flags |= SELECTION_FILTER | SELECTION_WITH_ALL;
+    $self->flags = selection_make_matchdeps($self->pool, &$self->q, name, flags, keyname, marker);
+  }
+  void matchdepid(DepId dep, int flags, Id keyname, Id marker = -1) {
+    if ((flags & SELECTION_MODEBITS) == 0)
+      flags |= SELECTION_FILTER | SELECTION_WITH_ALL;
+    $self->flags = selection_make_matchdepid($self->pool, &$self->q, dep, flags, keyname, marker);
+  }
+
   %typemap(out) Queue jobs Queue2Array(Job *, 2, new_Job(arg1->pool, id, idp[1]));
   %newobject jobs;
   Queue jobs(int flags) {
@@ -1679,6 +1730,13 @@ typedef struct {
     Id id = pool_str2id($self, str, create);
     return new_Dep($self, id);
   }
+#if defined(ENABLE_COMPLEX_DEPS) && (defined(ENABLE_SUSEREPO) || defined(ENABLE_RPMMD) || defined(ENABLE_RPMDB) || defined(ENABLE_RPMPKG))
+  %newobject Dep;
+  Dep *parserpmrichdep(const char *str) {
+    Id id = pool_parserpmrichdep($self, str);
+    return new_Dep($self, id);
+  }
+#endif
   const char *id2str(Id id) {
     return pool_id2str($self, id);
   }
@@ -1838,6 +1896,16 @@ typedef struct {
     return pool_queuetowhatprovides($self, &q);
   }
 
+  void set_namespaceproviders(DepId ns, DepId evr, bool value=1) {
+    Id dep = pool_rel2id($self, ns, evr, REL_NAMESPACE, 1);
+    pool_set_whatprovides($self, dep, value ? 2 : 1);
+  }
+
+  void flush_namespaceproviders(DepId ns, DepId evr) {
+    pool_flush_namespaceproviders($self, ns, evr);
+  }
+
+
   %typemap(out) Queue whatmatchesdep Queue2Array(XSolvable *, 1, new_XSolvable(arg1, id));
   %newobject whatmatchesdep;
   Queue whatmatchesdep(Id keyname, DepId dep, Id marker = -1) {
@@ -1880,6 +1948,20 @@ typedef struct {
   Selection *select(const char *name, int flags) {
     Selection *sel = new_Selection($self);
     sel->flags = selection_make($self, &sel->q, name, flags);
+    return sel;
+  }
+
+  %newobject matchdeps;
+  Selection *matchdeps(const char *name, int flags, Id keyname, Id marker = -1) {
+    Selection *sel = new_Selection($self);
+    sel->flags = selection_make_matchdeps($self, &sel->q, name, flags, keyname, marker);
+    return sel;
+  }
+
+  %newobject matchdepid;
+  Selection *matchdepid(DepId dep, int flags, Id keyname, Id marker = -1) {
+    Selection *sel = new_Selection($self);
+    sel->flags = selection_make_matchdepid($self, &sel->q, dep, flags, keyname, marker);
     return sel;
   }
 
@@ -2603,7 +2685,6 @@ rb_eval_string(
 #ifdef SWIGPERL
   perliter(solv::Pool_repo_iterator)
 #endif
-  %newobject __next__;
   Repo *__next__() {
     Pool *pool = $self->pool;
     if ($self->id >= pool->nrepos)
@@ -2619,7 +2700,7 @@ rb_eval_string(
   void each() {
     Repo *n;
     while ((n = Pool_repo_iterator___next__($self)) != 0) {
-      rb_yield(SWIG_NewPointerObj(SWIG_as_voidptr(n), SWIGTYPE_p_Repo, SWIG_POINTER_OWN | 0));
+      rb_yield(SWIG_NewPointerObj(SWIG_as_voidptr(n), SWIGTYPE_p_Repo, 0 | 0));
     }
   }
 #endif
@@ -2823,6 +2904,9 @@ rb_eval_string(
   }
   const char *lookup_location(unsigned int *OUTPUT) {
     return solvable_lookup_location($self->pool->solvables + $self->id, OUTPUT);
+  }
+  const char *lookup_sourcepkg() {
+    return solvable_lookup_sourcepkg($self->pool->solvables + $self->id);
   }
   %newobject Dataiterator;
   Dataiterator *Dataiterator(Id key, const char *match = 0, int flags = 0) {
@@ -3502,6 +3586,23 @@ rb_eval_string(
     }
     return q;
   }
+
+  %typemap(out) Queue get_recommended Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
+  %newobject get_recommended;
+  Queue get_recommended(bool noselected=0) {
+    Queue q;
+    queue_init(&q);
+    solver_get_recommendations($self, &q, NULL, noselected);
+    return q;
+  }
+  %typemap(out) Queue get_suggested Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
+  %newobject get_suggested;
+  Queue get_suggested(bool noselected=0) {
+    Queue q;
+    queue_init(&q);
+    solver_get_recommendations($self, NULL, &q, noselected);
+    return q;
+  }
 }
 
 %extend Transaction {
@@ -3785,6 +3886,9 @@ rb_eval_string(
     const unsigned char *buf = solv_chksum_get(chksum, 0);
     if (buf)
       repodata_set_bin_checksum(repo_id2repodata($self->repo, $self->id), solvid, keyname, solv_chksum_get_type(chksum), buf);
+  }
+  void set_sourcepkg(Id solvid, const char *sourcepkg) {
+    repodata_set_sourcepkg(repo_id2repodata($self->repo, $self->id), solvid, sourcepkg);
   }
   const char *lookup_str(Id solvid, Id keyname) {
     return repodata_lookup_str(repo_id2repodata($self->repo, $self->id), solvid, keyname);

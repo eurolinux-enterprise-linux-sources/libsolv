@@ -1,8 +1,113 @@
 -------------------------------------------------------------------
+Fri Mar 23 12:02:08 CET 2018 - mls@suse.de
+
+- make sure product files come from /etc/products.d in fallback
+  search [bnc#1086602]
+- bump version to 0.6.34
+
+-------------------------------------------------------------------
+Thu Mar  1 10:52:23 CET 2018 - mls@suse.de
+
+- also use suggests for ordering packages [bnc#1077635]
+
+-------------------------------------------------------------------
+Wed Feb 28 16:29:55 CET 2018 - mls@suse.de
+
+- fix bad assignment in solution refinement that led
+  to a memory leak [bnc#1075978]
+- use license tag instead of doc in the spec file [bnc#1082318]
+- bump version to 0.6.33
+
+-------------------------------------------------------------------
+Tue Feb 13 11:51:11 CET 2018 - mls@suse.de
+
+- fixed bug that could make fileconflict detection very slow
+  in some cases [bnc#953130]
+- bump version to 0.6.32
+
+-------------------------------------------------------------------
+Wed Jan 31 11:41:51 CET 2018 - mls@suse.de
+
+- new ENABLE_RPMDB_LIBRPM/ENABLE_RPMPKG_LIBRPM config options
+- new pool_set_whatprovides function to change the whatprovides
+  data
+- much improved selection code
+- bump version to 0.6.31
+
+-------------------------------------------------------------------
+Tue Oct 24 12:09:32 UTC 2017 - jengelh@inai.de
+
+- Update package descriptions and groups.
+  Replace old $RPM_* variables by macros.
+
+-------------------------------------------------------------------
+Mon Oct 23 11:40:22 CEST 2017 - mls@suse.de
+
+- many fixes and improvements for cleandeps
+- support debian packages with xz compressed control.tar
+- always create dup rules for "distupgrade" jobs
+- use recommends also for ordering packages
+- Fix splitprovides handling with addalreadyrecommended turned off
+  [bnc#1059065]
+- bump version to 0.6.30
+
+-------------------------------------------------------------------
+Thu Sep  7 16:18:20 CEST 2017 - mls@suse.de
+
+- expose solver_get_recommendations in bindings
+- fix bug in solver_prune_to_highest_prio_per_name resulting in
+  bad solver_get_recommendations output
+- support 'without' and 'unless' dependencies
+- fix yumobs rule generation bug
+- Use same heuristic as upstream to determine src rpms
+- bump version to 0.6.29
+
+-------------------------------------------------------------------
+Fri Jun 30 16:37:31 CEST 2017 - mls@suse.de
+
+- make peace with newer perl versions
+- fix memory leak in bindings
+- add pool_best_solvables() function
+- fix 64bit integer parsing from RPM headers
+- bump version to 0.6.28
+
+-------------------------------------------------------------------
+Sun May 28 13:32:15 UTC 2017 - ngompa13@gmail.com
+
+- Enable complex/rich dependencies for CentOS/RHEL 7, matching how
+  libsolv is configured there.
+
+-------------------------------------------------------------------
+Thu May 11 12:41:07 UTC 2017 - ngompa13@gmail.com
+
+- Disable bzip2 and xz/lzma compression support for SLE <= 12
+
+-------------------------------------------------------------------
+Mon May  8 13:15:09 UTC 2017 - ngompa13@gmail.com
+
+- Enable bzip2 and xz/lzma compression support
+- Enable complex/rich dependencies on distributions with RPM 4.13+
+- Simplified CentOS/RHEL conditionals
+- Added Mageia conditionals
+- Fixed a few spec portability issues
+
+-------------------------------------------------------------------
+Tue Apr 25 14:11:05 CEST 2017 - mls@suse.de
+
+- change queue resize code to use adaptive chunk sizes
+- fix potential segfault in testcase_depstr [bnc#1036002]
+- fix performance issues with name = md5sum dependencies
+  [bnc#1035946]
+- improve "forcebest with uninstall" handling
+- make dirid handling more robust
+- build with libxml2 instead of libexpat
+- bump version to 0.6.27
+
+-------------------------------------------------------------------
 Wed Feb 15 11:34:59 CET 2017 - mls@suse.de
 
 - export solvable_matchesdep function, as we now use it in
-  the bindings
+  the bindings [bnc#1025440]
 - bump version to 0.6.26
 
 -------------------------------------------------------------------

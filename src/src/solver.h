@@ -68,6 +68,7 @@ struct _Solver {
   Id duprules_end;
 
   Id bestrules;				/* rules from SOLVER_FORCEBEST */
+  Id bestrules_up;			/* update rule part starts here*/
   Id bestrules_end;
   Id *bestrules_pkg;
 
@@ -167,9 +168,10 @@ struct _Solver {
   int strongrecommends;			/* true: create weak rules for recommends */
   int install_also_updates;		/* true: do not prune install job rules to installed packages */
 
-  Map dupmap;				/* dup these packages*/
-  int dupmap_all;			/* dup all packages */
+  int process_orphans;			/* true: do special orphan processing */
+  Map dupmap;				/* dup to those packages */
   Map dupinvolvedmap;			/* packages involved in dup process */
+  int dupinvolvedmap_all;		/* all packages are involved */
   int dup_allowdowngrade;		/* dup mode: allow to downgrade installed solvable */
   int dup_allownamechange;		/* dup mode: allow to change name of installed solvable */
   int dup_allowarchchange;		/* dup mode: allow to change architecture of installed solvables */
@@ -341,6 +343,7 @@ extern void solver_get_recommendations(Solver *solv, Queue *recommendationsq, Qu
 extern void solver_get_unneeded(Solver *solv, Queue *unneededq, int filtered);
 extern void solver_get_userinstalled(Solver *solv, Queue *q, int flags);
 extern void pool_add_userinstalled_jobs(Pool *pool, Queue *q, Queue *job, int flags);
+extern void solver_get_cleandeps(Solver *solv, Queue *cleandepsq);
 
 extern int  solver_describe_decision(Solver *solv, Id p, Id *infop);
 extern void solver_describe_weakdep_decision(Solver *solv, Id p, Queue *whyq);

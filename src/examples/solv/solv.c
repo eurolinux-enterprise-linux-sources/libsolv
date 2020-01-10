@@ -36,6 +36,7 @@
 #include "solver.h"
 #include "solverdebug.h"
 #include "transaction.h"
+#include "testcase.h"
 #ifdef SUSE
 #include "repo_autopattern.h"
 #endif
@@ -49,7 +50,7 @@
 #include "fileconflicts.h"
 #include "deltarpm.h"
 #endif
-#if defined(SUSE) || defined(FEDORA)
+#if defined(SUSE) || defined(FEDORA) || defined(MAGEIA)
 #include "patchjobs.h"
 #endif
 
@@ -195,7 +196,7 @@ usage(int r)
   fprintf(stderr, "    search:       search name/summary/description\n");
   fprintf(stderr, "    update:       update installed packages\n");
   fprintf(stderr, "    verify:       check dependencies of installed packages\n");
-#if defined(SUSE) || defined(FEDORA)
+#if defined(SUSE) || defined(FEDORA) || defined(MAGEIA)
   fprintf(stderr, "    patch:        install newest maintenance updates\n");
 #endif
   fprintf(stderr, "\n");
@@ -228,6 +229,7 @@ main(int argc, char **argv)
   int keyname_depstr = 0;
   int debuglevel = 0;
   int answer, acnt = 0;
+  char *testcase = 0;
 
   argc--;
   argv++;
@@ -244,7 +246,7 @@ main(int argc, char **argv)
       mainmode = MODE_INSTALL;
       mode = SOLVER_INSTALL;
     }
-#if defined(SUSE) || defined(FEDORA)
+#if defined(SUSE) || defined(FEDORA) || defined(MAGEIA)
   else if (!strcmp(argv[0], "patch"))
     {
       mainmode = MODE_PATCH;
@@ -323,6 +325,12 @@ main(int argc, char **argv)
       else if (argc > 2 && !strcmp(argv[1], "--keyname"))
 	{
 	  keyname = argv[2];
+	  argc -= 2;
+	  argv += 2;
+	}
+      else if (argc > 2 && !strcmp(argv[1], "--testcase"))
+	{
+	  testcase = argv[2];
 	  argc -= 2;
 	  argv += 2;
 	}
@@ -525,14 +533,12 @@ main(int argc, char **argv)
 	flags |= SELECTION_WITH_SOURCE;
       if (argv[i][0] == '/')
 	flags |= SELECTION_FILELIST | (mode == MODE_ERASE ? SELECTION_INSTALLED_ONLY : 0);
+      if (keyname && keyname_depstr)
+	flags |= SELECTION_MATCH_DEPSTR;
       if (!keyname)
         rflags = selection_make(pool, &job2, argv[i], flags);
       else
-	{
-	  if (keyname_depstr)
-	    flags |= SELECTION_MATCH_DEPSTR;
-          rflags = selection_make_matchdeps(pool, &job2, argv[i], flags, pool_str2id(pool, keyname, 1), 0);
-	}
+        rflags = selection_make_matchdeps(pool, &job2, argv[i], flags, pool_str2id(pool, keyname, 1), 0);
       if (repofilter.count)
 	selection_filter(pool, &job2, &repofilter);
       if (archfilter.count)
@@ -638,7 +644,7 @@ main(int argc, char **argv)
       exit(0);
     }
 
-#if defined(SUSE) || defined(FEDORA)
+#if defined(SUSE) || defined(FEDORA) || defined(MAGEIA)
   if (mainmode == MODE_PATCH)
     add_patchjobs(pool, &job);
 #endif
@@ -655,10 +661,10 @@ main(int argc, char **argv)
         job.elements[i] |= SOLVER_FORCEBEST;
     }
 
+#if 0
   // multiversion test
-  // queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae", 1));
-  // queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae-base", 1));
-  // queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae-extra", 1));
+  queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_PROVIDES, pool_str2id(pool, "multiversion(kernel)", 1));
+#endif
 #if 0
   queue_push2(&job, SOLVER_INSTALL|SOLVER_SOLVABLE_PROVIDES, pool_rel2id(pool, NAMESPACE_LANGUAGE, 0, REL_NAMESPACE, 1));
   queue_push2(&job, SOLVER_ERASE|SOLVER_CLEANDEPS|SOLVER_SOLVABLE_PROVIDES, pool_rel2id(pool, NAMESPACE_LANGUAGE, 0, REL_NAMESPACE, 1));
@@ -667,7 +673,10 @@ main(int argc, char **argv)
 rerunsolver:
   solv = solver_create(pool);
   solver_set_flag(solv, SOLVER_FLAG_SPLITPROVIDES, 1);
-#ifdef FEDORA
+#if 0
+  solver_set_flag(solv, SOLVER_FLAG_IGNORE_RECOMMENDED, 1);
+#endif
+#if defined(FEDORA) || defined(MAGEIA)
   solver_set_flag(solv, SOLVER_FLAG_ALLOW_VENDORCHANGE, 1);
 #endif
   if (mainmode == MODE_ERASE)
@@ -679,7 +688,15 @@ rerunsolver:
       Id problem, solution;
       int pcnt, scnt;
 
-      if (!solver_solve(solv, &job))
+      pcnt = solver_solve(solv, &job);
+      if (testcase)
+	{
+	  printf("Writing solver testcase:\n");
+	  if (!testcase_write(solv, testcase, TESTCASE_RESULT_TRANSACTION | TESTCASE_RESULT_PROBLEMS, 0, 0))
+	    printf("%s\n", pool_errstr(pool));
+	  testcase = 0;
+	}
+      if (!pcnt)
 	break;
       pcnt = solver_problem_count(solv);
       printf("Found %d problems:\n", pcnt);

@@ -145,7 +145,7 @@ solver_prune_installed_dup_packages(Solver *solv, Queue *plist)
       Solvable *s = pool->solvables + p;
       if (s->repo != pool->installed && s->repo->priority < bestprio)
 	continue;
-      if (s->repo == pool->installed && (solv->dupmap_all || (solv->dupinvolvedmap.size && MAPTST(&solv->dupinvolvedmap, p))))
+      if (s->repo == pool->installed && (solv->dupinvolvedmap_all || (solv->dupinvolvedmap.size && MAPTST(&solv->dupinvolvedmap, p))))
 	{
 	  Id p2, pp2;
 	  int keepit = 0;
@@ -181,7 +181,7 @@ static inline void
 solver_prune_to_highest_prio(Solver *solv, Queue *plist)
 {
   prune_to_highest_prio(solv->pool, plist);
-  if (plist->count > 1 && solv->pool->installed && (solv->dupmap_all || solv->dupinvolvedmap.size))
+  if (plist->count > 1 && solv->pool->installed && (solv->dupinvolvedmap_all || solv->dupinvolvedmap.size))
     solver_prune_installed_dup_packages(solv, plist);
 }
 
@@ -202,14 +202,14 @@ solver_prune_to_highest_prio_per_name(Solver *solv, Queue *plist)
     {
       if (pool->solvables[plist->elements[i]].name != name)
 	{
+	  name = pool->solvables[plist->elements[i]].name;
 	  if (pq.count > 2)
 	    solver_prune_to_highest_prio(solv, &pq);
 	  for (k = 0; k < pq.count; k++)
 	    plist->elements[j++] = pq.elements[k];
 	  queue_empty(&pq);
-	  queue_push(&pq, plist->elements[i]);
-	  name = pool->solvables[pq.elements[0]].name;
 	}
+      queue_push(&pq, plist->elements[i]);
     }
   if (pq.count > 2)
     solver_prune_to_highest_prio(solv, &pq);
@@ -1353,6 +1353,22 @@ policy_filter_unwanted(Solver *solv, Queue *plist, int mode)
     }
 }
 
+void
+pool_best_solvables(Pool *pool, Queue *plist, int flags)
+{
+  if (plist->count > 1)
+    prune_to_highest_prio(pool, plist);
+  if (plist->count > 1)
+    prune_to_best_arch(pool, plist);
+  if (plist->count > 1)
+    prune_to_best_version(pool, plist);
+  if (plist->count > 1)
+    {
+      dislike_old_versions(pool, plist);
+      sort_by_common_dep(pool, plist);
+    }
+}
+
 
 /* check if there is an illegal architecture change if
  * installed solvable s1 is replaced by s2 */
@@ -1408,7 +1424,7 @@ policy_is_illegal(Solver *solv, Solvable *is, Solvable *s, int ignore)
 {
   Pool *pool = solv->pool;
   int ret = 0;
-  int duppkg = solv->dupmap_all ? 1 : 0;
+  int duppkg = solv->dupinvolvedmap_all || (solv->dupinvolvedmap.size && MAPTST(&solv->dupinvolvedmap, is - pool->solvables));
   if (!(ignore & POLICY_ILLEGAL_DOWNGRADE) && !(duppkg ? solv->dup_allowdowngrade : solv->allowdowngrade))
     {
       if (is->name == s->name && pool_evrcmp(pool, is->evr, s->evr, EVRCMP_COMPARE) > 0)

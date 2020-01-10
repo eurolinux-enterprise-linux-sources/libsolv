@@ -1,18 +1,14 @@
 %global libname solv
 
-%bcond_without python_bindings
+%bcond_without python2_bindings
 %if 0%{?rhel} && 0%{?rhel} <= 7
 %bcond_with perl_bindings
 %bcond_with ruby_bindings
-%if %{with python_bindings}
-  %bcond_with python3
-%endif
+%bcond_with python3_bindings
 %else
 %bcond_without perl_bindings
 %bcond_without ruby_bindings
-%if %{with python_bindings}
-  %bcond_without python3
-%endif
+%bcond_without python3_bindings
 %endif
 # Creates special prefixed pseudo-packages from appdata metadata
 %bcond_with appdata
@@ -37,7 +33,7 @@
 %endif
 
 Name:           lib%{libname}
-Version:        0.6.26
+Version:        0.6.34
 Release:        2%{?dist}
 Summary:        Package dependency solver
 
@@ -124,7 +120,7 @@ Requires:       %{name}%{?_isa} = %{version}-%{release}
 Ruby bindings for the %{name} library.
 %endif
 
-%if %{with python_bindings}
+%if %{with python2_bindings}
 %package -n python2-%{libname}
 Summary:        Python bindings for the %{name} library
 %{?python_provide:%python_provide python2-%{libname}}
@@ -136,8 +132,9 @@ Requires:       %{name}%{?_isa} = %{version}-%{release}
 Python bindings for the %{name} library.
 
 Python 2 version.
+%endif
 
-%if %{with python3}
+%if %{with python3_bindings}
 %package -n python3-%{libname}
 Summary:        Python bindings for the %{name} library
 %{?python_provide:%python_provide python3-%{libname}}
@@ -150,53 +147,44 @@ Python bindings for the %{name} library.
 
 Python 3 version.
 %endif
-%endif
 
 %prep
 %autosetup -p1
-mkdir build
 
 %build
-pushd build
-  %cmake                                          \
-    -DFEDORA=1                                    \
-    -DENABLE_RPMDB=ON                             \
-    -DENABLE_RPMDB_BYRPMHEADER=ON                 \
-    -DENABLE_RPMMD=ON                             \
-    %{?with_comps:-DENABLE_COMPS=ON}              \
-    %{?with_appdata:-DENABLE_APPDATA=ON}          \
-    -DUSE_VENDORDIRS=ON                           \
-    -DENABLE_LZMA_COMPRESSION=ON                  \
-    -DENABLE_BZIP2_COMPRESSION=ON                 \
-    %{?with_helix_repo:-DENABLE_HELIXREPO=ON}     \
-    %{?with_suse_repo:-DENABLE_SUSEREPO=ON}       \
-    %{?with_debian_repo:-DENABLE_DEBIAN=ON}       \
-    %{?with_arch_repo:-DENABLE_ARCHREPO=ON}       \
-    %{?with_multi_semantics:-DMULTI_SEMANTICS=ON} \
-    %{?with_complex_deps:-DENABLE_COMPLEX_DEPS=1} \
-    %{?with_perl_bindings:-DENABLE_PERL=ON}       \
-    %{?with_ruby_bindings:-DENABLE_RUBY=ON}       \
-%if %{with python_bindings}
-    -DENABLE_PYTHON=ON                            \
-%if %{with python3}
-    -DENABLE_PYTHON3=ON                           \
-%endif
-%endif
-    ..
-  %make_build
-popd
+%cmake . -Bbuild                                \
+  -DFEDORA=1                                    \
+  -DENABLE_RPMDB=ON                             \
+  -DENABLE_RPMDB_BYRPMHEADER=ON                 \
+  -DENABLE_RPMDB_LIBRPM=OFF                     \
+  -DENABLE_RPMPKG_LIBRPM=OFF                    \
+  -DENABLE_RPMMD=ON                             \
+  %{?with_comps:-DENABLE_COMPS=ON}              \
+  %{?with_appdata:-DENABLE_APPDATA=ON}          \
+  -DUSE_VENDORDIRS=ON                           \
+  -DWITH_LIBXML2=OFF                            \
+  -DENABLE_LZMA_COMPRESSION=ON                  \
+  -DENABLE_BZIP2_COMPRESSION=ON                 \
+  %{?with_helix_repo:-DENABLE_HELIXREPO=ON}     \
+  %{?with_suse_repo:-DENABLE_SUSEREPO=ON}       \
+  %{?with_debian_repo:-DENABLE_DEBIAN=ON}       \
+  %{?with_arch_repo:-DENABLE_ARCHREPO=ON}       \
+  %{?with_multi_semantics:-DMULTI_SEMANTICS=ON} \
+  %{?with_complex_deps:-DENABLE_COMPLEX_DEPS=1} \
+  %{?with_perl_bindings:-DENABLE_PERL=ON}       \
+  %{?with_ruby_bindings:-DENABLE_RUBY=ON}       \
+  %{?with_python2_bindings:-DENABLE_PYTHON=ON}  \
+  %{?with_python3_bindings:-DENABLE_PYTHON3=ON} \
+  %{nil}
+%make_build -C build
 
 %install
-pushd build
-  %make_install
-popd
+%make_install -C build
 
-mv %{buildroot}%{_bindir}/repo2solv.sh %{buildroot}%{_bindir}/repo2solv
+mv %{buildroot}%{_bindir}/repo2solv{.sh,}
 
 %check
-pushd build
-  ctest -VV
-popd
+%make_build test -C build
 
 %post -p /sbin/ldconfig
 
@@ -271,20 +259,26 @@ popd
 %{ruby_vendorarchdir}/%{libname}.so
 %endif
 
-%if %{with python_bindings}
+%if %{with python2_bindings}
 %files -n python2-%{libname}
 %{python2_sitearch}/_%{libname}.so
 %{python2_sitearch}/%{libname}.py*
+%endif
 
-%if %{with python3}
+%if %{with python3_bindings}
 %files -n python3-%{libname}
 %{python3_sitearch}/_%{libname}.so
 %{python3_sitearch}/%{libname}.py
 %{python3_sitearch}/__pycache__/%{libname}.*
 %endif
-%endif
 
 %changelog
+* Wed Jun 20 2018 Igor Gnatenko <ignatenko@redhat.com> - 0.6.34-2
+- Add changelog
+
+* Wed Jun 20 2018 Igor Gnatenko <ignatenko@redhat.com> - 0.6.34-1
+- Update to 0.6.34
+
 * Fri Sep 22 2017 Igor Gnatenko <ignatenko@redhat.com> - 0.6.26-2
 - Enable python bindings
 

@@ -14,6 +14,9 @@
 #ifdef ENABLE_APPDATA
 #include "repo_appdata.h"
 #endif
+#ifdef SUSE
+#include "repo_autopattern.h"
+#endif
 
 #include "repoinfo.h"
 #include "repoinfo_cache.h"
@@ -195,7 +198,11 @@ repomd_load(struct repoinfo *cinfo, Pool **sigpoolp)
       fclose(fp);
     }
 #endif
+#ifdef SUSE
+  repo_add_autopattern(repo, 0);
+#endif
   data = repo_add_repodata(repo, 0);
+  repodata_extend_block(data, repo->start, repo->end - repo->start);
   repomd_add_ext(repo, data, "deltainfo", "DL");
   repomd_add_ext(repo, data, "filelists", "FL");
   repodata_internalize(data);

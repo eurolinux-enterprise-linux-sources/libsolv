@@ -705,6 +705,10 @@ pool_match_nevr_rel(Pool *pool, Solvable *s, Id d)
 	  if (!pool_match_nevr(pool, s, name))
 	    return 0;
 	  return pool_match_nevr(pool, s, evr);
+	case REL_WITHOUT:
+	  if (!pool_match_nevr(pool, s, name))
+	    return 0;
+	  return !pool_match_nevr(pool, s, evr);
 	case REL_MULTIARCH:
 	  if (evr != ARCH_ANY)
 	    return 0;
@@ -818,17 +822,17 @@ pool_match_dep(Pool *pool, Id d1, Id d2)
     {
       /* we use potentially matches for complex deps */
       rd1 = GETRELDEP(pool, d1);
-      if (rd1->flags == REL_AND || rd1->flags == REL_OR || rd1->flags == REL_WITH || rd1->flags == REL_COND)
+      if (rd1->flags == REL_AND || rd1->flags == REL_OR || rd1->flags == REL_WITH || rd1->flags == REL_WITHOUT || rd1->flags == REL_COND || rd1->flags == REL_UNLESS)
 	{
 	  if (pool_match_dep(pool, rd1->name, d2))
 	    return 1;
-	  if (rd1->flags == REL_COND && ISRELDEP(rd1->evr))
+	  if ((rd1->flags == REL_COND || rd1->flags == REL_UNLESS) && ISRELDEP(rd1->evr))
 	    {
 	      rd1 = GETRELDEP(pool, rd1->evr);
 	      if (rd1->flags != REL_ELSE)
 		return 0;
 	    }
-	  if (rd1->flags != REL_COND && pool_match_dep(pool, rd1->evr, d2))
+	  if (rd1->flags != REL_COND && rd1->flags != REL_UNLESS && rd1->flags != REL_WITHOUT && pool_match_dep(pool, rd1->evr, d2))
 	    return 1;
 	  return 0;
 	}
@@ -837,17 +841,17 @@ pool_match_dep(Pool *pool, Id d1, Id d2)
     {
       /* we use potentially matches for complex deps */
       rd2 = GETRELDEP(pool, d2);
-      if (rd2->flags == REL_AND || rd2->flags == REL_OR || rd2->flags == REL_WITH || rd2->flags == REL_COND)
+      if (rd2->flags == REL_AND || rd2->flags == REL_OR || rd2->flags == REL_WITH || rd2->flags == REL_WITHOUT || rd2->flags == REL_COND || rd2->flags == REL_UNLESS)
 	{
 	  if (pool_match_dep(pool, d1, rd2->name))
 	    return 1;
-	  if (rd2->flags == REL_COND && ISRELDEP(rd2->evr))
+	  if ((rd2->flags == REL_COND || rd2->flags == REL_UNLESS) && ISRELDEP(rd2->evr))
 	    {
 	      rd2 = GETRELDEP(pool, rd2->evr);
 	      if (rd2->flags != REL_ELSE)
 		return 0;
 	    }
-	  if (rd2->flags != REL_COND && pool_match_dep(pool, d1, rd2->evr))
+	  if (rd2->flags != REL_COND && rd2->flags != REL_UNLESS && rd2->flags != REL_WITHOUT && pool_match_dep(pool, d1, rd2->evr))
 	    return 1;
 	  return 0;
 	}
@@ -855,7 +859,7 @@ pool_match_dep(Pool *pool, Id d1, Id d2)
   if (!ISRELDEP(d1))
     {
       if (!ISRELDEP(d2))
-	return 0;
+	return 0;	/* cannot match as d1 != d2 */
       rd2 = GETRELDEP(pool, d2);
       return pool_match_dep(pool, d1, rd2->name);
     }
@@ -998,6 +1002,64 @@ pool_is_kind(Pool *pool, Id name, Id kind)
 }
 
 /*
+ * rpm eq magic:
+ *
+ * some dependencies are of the from "foo = md5sum", like the
+ * buildid provides. There's not much we can do to speed up
+ * getting the providers, because rpm's complex evr comparison
+ * rules get in the way. But we can use the first character(s)
+ * of the md5sum to do a simple pre-check.
+ */
+static inline int
+rpmeqmagic(Pool *pool, Id evr)
+{
+  const char *s = pool_id2str(pool, evr);
+  if (*s == '0')
+    {
+      while (*s == '0' && s[1] >= '0' && s[1] <= '9')
+	s++;
+      /* ignore epoch 0 */
+      if (*s == '0' && s[1] == ':')
+	{
+	  s += 2;
+	  while (*s == '0' && s[1] >= '0' && s[1] <= '9')
+	    s++;
+	}
+    }
+  if (*s >= '0' && *s <= '9')
+    {
+      if (s[1] >= '0' && s[1] <= '9')
+        return *s + (s[1] << 8);
+      return *s;
+    }
+  if ((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z'))
+    {
+      if ((s[1] >= 'a' && s[1] <= 'z') || (s[1] >= 'A' && s[1] <= 'Z'))
+        return *s + (s[1] << 8);
+      return *s;
+    }
+  return -1;
+}
+
+static inline int
+rpmeqmagic_init(Pool *pool, int flags, Id evr)
+{
+  if (flags != REL_EQ || pool->disttype != DISTTYPE_RPM || pool->promoteepoch || ISRELDEP(evr))
+    return -1;
+  else
+    return rpmeqmagic(pool, evr);
+}
+
+static inline int
+rpmeqmagic_cantmatch(Pool *pool, int flags, Id evr, int eqmagic)
+{
+  int peqmagic = rpmeqmagic(pool, evr);
+  if (peqmagic > 0 && peqmagic != eqmagic)
+    return 1;
+  return 0;
+}
+
+/*
  * addrelproviders
  *
  * add packages fulfilling the relation to whatprovides array
@@ -1050,11 +1112,26 @@ pool_addrelproviders(Pool *pool, Id d)
 		wp = 0;
 	    }
 	  break;
-
+	case REL_WITHOUT:
+	  wp = pool_whatprovides(pool, name);
+	  pp2 = pool_whatprovides_ptr(pool, evr);
+	  pp = pool->whatprovidesdata + wp;
+	  while ((p = *pp++) != 0)
+	    {
+	      for (pp3 = pp2; *pp3; pp3++)
+		if (*pp3 == p)
+		  break;
+	      if (!*pp3)
+		queue_push(&plist, p);	/* use it */
+	      else
+		wp = 0;
+	    }
+	  break;
 	case REL_AND:
 	case REL_OR:
 	case REL_COND:
-	  if (flags == REL_COND)
+	case REL_UNLESS:
+	  if (flags == REL_COND || flags == REL_UNLESS)
 	    {
 	      if (ISRELDEP(evr))
 		{
@@ -1218,6 +1295,7 @@ pool_addrelproviders(Pool *pool, Id d)
   else if (flags)
     {
       Id *ppaux = 0;
+      int eqmagic = 0;
       /* simple version comparison relation */
 #if 0
       POOL_DEBUG(SOLV_DEBUG_STATS, "addrelproviders: what provides %s?\n", pool_dep2str(pool, name));
@@ -1253,6 +1331,11 @@ pool_addrelproviders(Pool *pool, Id d)
 		      prd = GETRELDEP(pool, pid);
 		      if (prd->name != name)
 			continue;		/* wrong provides name */
+		      if (!eqmagic)
+			eqmagic = rpmeqmagic_init(pool, flags, evr);
+		      if (eqmagic > 0 && prd->flags == REL_EQ && !ISRELDEP(prd->evr) &&
+			  rpmeqmagic_cantmatch(pool, prd->flags, prd->evr, eqmagic))
+			continue;
 		      /* right package, both deps are rels. check flags/evr */
 		      if (!pool_match_flags_evr(pool, prd->flags, prd->evr, flags, evr))
 			continue;
@@ -1269,6 +1352,8 @@ pool_addrelproviders(Pool *pool, Id d)
 	      continue;
 	    }
 	  /* solvable p provides name in some rels */
+	  if (!eqmagic)
+	    eqmagic = rpmeqmagic_init(pool, flags, evr);
 	  pidp = s->repo->idarraydata + s->provides;
 	  while ((pid = *pidp++) != 0)
 	    {
@@ -1284,6 +1369,9 @@ pool_addrelproviders(Pool *pool, Id d)
 	      if (prd->name != name)
 		continue;		/* wrong provides name */
 	      /* right package, both deps are rels. check flags/evr */
+	      if (eqmagic > 0 && prd->flags == REL_EQ && !ISRELDEP(prd->evr) &&
+	          rpmeqmagic_cantmatch(pool, prd->flags, prd->evr, eqmagic))
+		continue;
 	      if (pool_match_flags_evr(pool, prd->flags, prd->evr, flags, evr))
 		break;	/* matches */
 	    }
@@ -1322,7 +1410,8 @@ pool_flush_namespaceproviders(Pool *pool, Id ns, Id evr)
 	continue;
       if (evr && rd->evr != evr)
 	continue;
-      pool->whatprovides_rel[d] = 0;
+      if (pool->whatprovides_rel[d])
+        pool_set_whatprovides(pool, MAKERELDEP(d), 0);
     }
 }
 
@@ -1428,6 +1517,9 @@ pool_error(Pool *pool, int ret, const char *format, ...)
 {
   va_list args;
   int l;
+
+  if (!pool)
+    return ret;
   va_start(args, format);
   if (!pool->errstr)
     {
@@ -1774,24 +1866,66 @@ pool_lookup_deltalocation(Pool *pool, Id entry, unsigned int *medianrp)
   return loc;
 }
 
+void
+pool_set_whatprovides(Pool *pool, Id id, Id providers)
+{
+  int d, nrels = pool->nrels;
+  Reldep *rd;
+  Map m;
+
+  /* set new entry */
+  if (ISRELDEP(id))
+    {
+      d = GETRELID(id);
+      pool->whatprovides_rel[d] = providers;
+      d++;
+    }
+  else
+    {
+      pool->whatprovides[id] = providers;
+      if (id < pool->whatprovidesauxoff)
+	pool->whatprovidesaux[id] = 0;	/* sorry */
+      d = 1;
+    }
+  if (!pool->whatprovides_rel)
+    return;
+  /* clear cache of all rels that use it */
+  map_init(&m, 0);
+  for (rd = pool->rels + d; d < nrels; d++, rd++)
+    {
+      if (rd->name == id || rd->evr == id ||
+	  (m.size && ISRELDEP(rd->name) && MAPTST(&m, GETRELID(rd->name))) || 
+	  (m.size && ISRELDEP(rd->evr)  && MAPTST(&m, GETRELID(rd->evr))))
+	{
+	  pool->whatprovides_rel[d] = 0;	/* clear cache */
+	  if (!m.size)
+	    map_init(&m, nrels);
+	  MAPSET(&m, d);
+	}
+    }
+  map_free(&m);
+}
+
 static void
 add_new_provider(Pool *pool, Id id, Id p)
 {
   Queue q;
   Id *pp;
 
+  /* find whatprovides entry */
   while (ISRELDEP(id))
     {
       Reldep *rd = GETRELDEP(pool, id);
       id = rd->name;
     }
 
+  /* add new provider to existing list keeping it sorted */
   queue_init(&q);
   for (pp = pool->whatprovidesdata + pool->whatprovides[id]; *pp; pp++)
     {
       if (*pp == p)
 	{
-	  queue_free(&q);
+	  queue_free(&q);	/* already have it */
 	  return;
 	}
       if (*pp > p)
@@ -1803,9 +1937,7 @@ add_new_provider(Pool *pool, Id id, Id p)
     }
   if (p)
     queue_push(&q, p);
-  pool->whatprovides[id] = pool_queuetowhatprovides(pool, &q);
-  if (id < pool->whatprovidesauxoff)
-    pool->whatprovidesaux[id] = 0;	/* sorry */
+  pool_set_whatprovides(pool, id, pool_queuetowhatprovides(pool, &q));
   queue_free(&q);
 }
 
@@ -1832,9 +1964,7 @@ pool_add_fileconflicts_deps(Pool *pool, Queue *conflicts)
 	continue;
       s->provides = repo_addid_dep(s->repo, s->provides, id, SOLVABLE_FILEMARKER);
       if (pool->whatprovides)
-	add_new_provider(pool, fn, p);
-      if (pool->whatprovides_rel)
-	pool->whatprovides_rel[GETRELID(id)] = 0;	/* clear cache */
+	add_new_provider(pool, id, p);
       s = pool->solvables + q;
       if (!s->repo)
 	continue;

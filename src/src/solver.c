@@ -31,243 +31,6 @@
 #define RULES_BLOCK 63
 
 
-/********************************************************************
- *
- * dependency check helpers
- *
- */
-
-/*-------------------------------------------------------------------
- * handle split provides
- *
- * a splitprovides dep looks like
- *     namespace:splitprovides(pkg REL_WITH path)
- * and is only true if pkg is installed and contains the specified path.
- * we also make sure that pkg is selected for an update, otherwise the
- * update would always be forced onto the user.
- * Map m is the map used when called from dep_possible.
- */
-
-static int
-solver_is_updating(Solver *solv, Id p)
-{
-  /* check if the update rule is true */
-  Pool *pool = solv->pool;
-  Rule *r;
-  Id l, pp;
-  if (solv->decisionmap[p] >= 0)
-    return 0;	/* old package stayed */
-  r = solv->rules + solv->updaterules + (p - solv->installed->start);
-  FOR_RULELITERALS(l, pp, r)
-    if (l > 0 && l != p && solv->decisionmap[l] > 0)
-      return 1;
-  return 0;
-}
-
-int
-solver_splitprovides(Solver *solv, Id dep, Map *m)
-{
-  Pool *pool = solv->pool;
-  Id p, pp;
-  Reldep *rd;
-  Solvable *s;
-
-  if (!solv->dosplitprovides || !solv->installed)
-    return 0;
-  if (!ISRELDEP(dep))
-    return 0;
-  rd = GETRELDEP(pool, dep);
-  if (rd->flags != REL_WITH)
-    return 0;
-  /*
-   * things are a bit tricky here if pool->addedprovides == 1, because most split-provides are in
-   * a non-standard location. If we simply call pool_whatprovides, we'll drag in the complete
-   * file list. Instead we rely on pool_addfileprovides ignoring the addfileprovidesfiltered flag
-   * for installed packages and check the lazywhatprovidesq (ignoring the REL_WITH part, but
-   * we filter the package name further down anyway).
-   */
-  if (pool->addedfileprovides == 1 && !ISRELDEP(rd->evr) && !pool->whatprovides[rd->evr])
-    pp = pool_searchlazywhatprovidesq(pool, rd->evr);
-  else
-    pp = pool_whatprovides(pool, dep);
-  while ((p = pool->whatprovidesdata[pp++]) != 0)
-    {
-      /* here we have packages that provide the correct name and contain the path,
-       * now do extra filtering */
-      s = pool->solvables + p;
-      if (s->repo != solv->installed || s->name != rd->name)
-	continue;
-      /* check if the package is updated. if m is set, we're called from dep_possible */
-      if (m || solver_is_updating(solv, p))
-	return 1;
-    }
-  return 0;
-}
-
-
-/* mirrors solver_dep_fulfilled, but returns 2 if a new package
- * was involved */
-static int
-solver_dep_fulfilled_alreadyinstalled(Solver *solv, Id dep)
-{
-  Pool *pool = solv->pool;
-  Id p, pp;
-  int r;
-
-  if (ISRELDEP(dep))
-    {
-      Reldep *rd = GETRELDEP(pool, dep);
-      if (rd->flags == REL_COND)
-	{
-	  int r1, r2;
-	  if (ISRELDEP(rd->evr))
-	    {
-	      Reldep *rd2 = GETRELDEP(pool, rd->evr);
-	      if (rd2->flags == REL_ELSE)
-		{
-		  r1 = solver_dep_fulfilled_alreadyinstalled(solv, rd2->name);
-		  if (r1)
-		    {
-		      r2 = solver_dep_fulfilled_alreadyinstalled(solv, rd->name);
-		      return r2 && r1 == 2 ? 2 : r2;
-		    }
-		  return solver_dep_fulfilled_alreadyinstalled(solv, rd2->evr);
-		}
-	    }
-	  r1 = solver_dep_fulfilled_alreadyinstalled(solv, rd->name);
-	  r2 = !solver_dep_fulfilled_alreadyinstalled(solv, rd->evr);
-	  if (!r1 && !r2)
-	    return 0;
-          return r1 == 2 ? 2 : 1;
-	}
-      if (rd->flags == REL_AND)
-        {
-	  int r2, r1 = solver_dep_fulfilled_alreadyinstalled(solv, rd->name);
-          if (!r1)
-            return 0;
-	  r2 = solver_dep_fulfilled_alreadyinstalled(solv, rd->evr);
-	  if (!r2)
-	    return 0;
-          return r1 == 2 || r2 == 2 ? 2 : 1;
-        }
-      if (rd->flags == REL_OR)
-	{
-	  int r2, r1 = solver_dep_fulfilled_alreadyinstalled(solv, rd->name);
-	  r2 = solver_dep_fulfilled_alreadyinstalled(solv, rd->evr);
-	  if (!r1 && !r2)
-	    return 0;
-          return r1 == 2 || r2 == 2 ? 2 : 1;
-	}
-      if (rd->flags == REL_NAMESPACE && rd->name == NAMESPACE_SPLITPROVIDES)
-        return solver_splitprovides(solv, rd->evr, 0);
-      if (rd->flags == REL_NAMESPACE && solv->installsuppdepq)
-	{
-	  Queue *q = solv->installsuppdepq;
-	  int i;
-	  for (i = 0; i < q->count; i++)
-	    if (q->elements[i] == dep || q->elements[i] == rd->name)
-	      return 2;
-	}
-    }
-  r = 0;
-  FOR_PROVIDES(p, pp, dep)
-    if (solv->decisionmap[p] > 0)
-      {
-	Solvable *s = pool->solvables + p;
-	if (s->repo && s->repo != solv->installed)
-	  return 2;
-        r = 1;
-      }
-  return r;
-}
-
-static int
-solver_is_supplementing_alreadyinstalled(Solver *solv, Solvable *s)
-{
-  Id sup, *supp;
-  supp = s->repo->idarraydata + s->supplements;
-  while ((sup = *supp++) != 0)
-    if (solver_dep_fulfilled_alreadyinstalled(solv, sup) == 2)
-      return 1;
-  return 0;
-}
-
-static Id
-autouninstall(Solver *solv, Id *problem)
-{
-  Pool *pool = solv->pool;
-  int i;
-  int lastfeature = 0, lastupdate = 0;
-  Id v;
-  Id extraflags = -1;
-  Map *m = 0;
-
-  if (!solv->allowuninstall && !solv->allowuninstall_all)
-    {
-      if (!solv->allowuninstallmap.size)
-	return 0;		/* why did we get called? */
-      m = &solv->allowuninstallmap;
-    }
-  for (i = 0; (v = problem[i]) != 0; i++)
-    {
-      if (v < 0)
-	extraflags &= solv->job.elements[-v - 1];
-      if (v >= solv->updaterules && v < solv->updaterules_end)
-	{
-	  Rule *r;
-	  if (m && !MAPTST(m, v - solv->updaterules))
-	    continue;
-	  /* check if identical to feature rule, we don't like that (except for orphans) */
-	  r = solv->rules + solv->featurerules + (v - solv->updaterules);
-	  if (!r->p)
-	    {
-	      /* update rule == feature rule */
-	      if (v > lastfeature)
-		lastfeature = v;
-	      /* prefer orphaned packages in dup mode */
-	      if (solv->keep_orphans)
-		{
-		  r = solv->rules + v;
-		  if (!r->d && !r->w2 && r->p == (solv->installed->start + (v - solv->updaterules)))
-		    {
-		      lastfeature = v;
-		      lastupdate = 0;
-		      break;
-		    }
-		}
-	      continue;
-	    }
-	  if (v > lastupdate)
-	    lastupdate = v;
-	}
-    }
-  if (!lastupdate && !lastfeature)
-    return 0;
-  v = lastupdate ? lastupdate : lastfeature;
-  POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "allowuninstall disabling ");
-  solver_printruleclass(solv, SOLV_DEBUG_UNSOLVABLE, solv->rules + v);
-  solver_disableproblem(solv, v);
-  if (extraflags != -1 && (extraflags & SOLVER_CLEANDEPS) != 0 && solv->cleandepsmap.size)
-    {
-      /* add the package to the updatepkgs list, this will automatically turn
-       * on cleandeps mode */
-      Id p = solv->rules[v].p;
-      if (!solv->cleandeps_updatepkgs)
-	{
-	  solv->cleandeps_updatepkgs = solv_calloc(1, sizeof(Queue));
-	  queue_init(solv->cleandeps_updatepkgs);
-	}
-      if (p > 0)
-	{
-	  int oldupdatepkgscnt = solv->cleandeps_updatepkgs->count;
-          queue_pushunique(solv->cleandeps_updatepkgs, p);
-	  if (solv->cleandeps_updatepkgs->count != oldupdatepkgscnt)
-	    solver_disablepolicyrules(solv);
-	}
-    }
-  return v;
-}
-
 /************************************************************************/
 
 /*
@@ -325,17 +88,18 @@ enabledisablelearntrules(Solver *solv)
  * If we find a conflict, disable rules and add them to problem queue.
  */
 
-static void
-makeruledecisions(Solver *solv)
+static int
+makeruledecisions(Solver *solv, int disablerules)
 {
   Pool *pool = solv->pool;
-  int i, ri, ii;
+  int i, ri, ii, ori;
   Rule *r, *rr;
   Id v, vv;
   int decisionstart;
   int record_proof = 1;
   int oldproblemcount;
   int havedisabled = 0;
+  int doautouninstall;
 
   /* The system solvable is always installed first */
   assert(solv->decisionq.count == 0);
@@ -383,7 +147,7 @@ makeruledecisions(Solver *solv)
 	  if (!solv->decisionmap[vv])          /* if not yet decided */
 	    {
 	      queue_push(&solv->decisionq, v);
-	      queue_push(&solv->decisionq_why, r - solv->rules);
+	      queue_push(&solv->decisionq_why, ri);
 	      solv->decisionmap[vv] = v > 0 ? 1 : -1;
 	      IF_POOLDEBUG (SOLV_DEBUG_PROPAGATE)
 		{
@@ -415,10 +179,13 @@ makeruledecisions(Solver *solv)
 	      /* conflict with a learnt rule */
 	      /* can happen when packages cannot be installed for multiple reasons. */
 	      /* we disable the learnt rule in this case */
-	      /* (XXX: we should really call analyze_unsolvable_rule here!) */
+	      /* (XXX: we should really do something like analyze_unsolvable_rule here!) */
 	      solver_disablerule(solv, r);
 	      continue;
 	    }
+
+	  POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "ANALYZE UNSOLVABLE ASSERTION ----------------------\n");
+	  assert(ri >= solv->pkgrules_end);	/* must not have a conflict in the pkg rules! */
 
 	  /*
 	   * find the decision which is the "opposite" of the rule
@@ -427,134 +194,94 @@ makeruledecisions(Solver *solv)
 	    if (solv->decisionq.elements[i] == -v)
 	      break;
 	  assert(i < solv->decisionq.count);         /* assert that we found it */
-	  oldproblemcount = solv->problems.count;
-
-	  /*
-	   * conflict with system solvable ?
-	   */
 	  if (v == -SYSTEMSOLVABLE)
+	    ori = 0;
+	  else
 	    {
-	      if (record_proof)
-		{
-		  queue_push(&solv->problems, solv->learnt_pool.count);
-		  queue_push(&solv->learnt_pool, ri);
-		  queue_push(&solv->learnt_pool, 0);
-		}
-	      else
-		queue_push(&solv->problems, 0);
-	      POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "conflict with system solvable, disabling rule #%d\n", ri);
-	      if  (ri >= solv->jobrules && ri < solv->jobrules_end)
-		v = -(solv->ruletojob.elements[ri - solv->jobrules] + 1);
-	      else
-		v = ri;
-	      queue_push(&solv->problems, v);
-	      queue_push(&solv->problems, 0);
-	      if (v >= solv->featurerules && v < solv->updaterules_end)
-		{
-		  if (solv->allowuninstall || solv->allowuninstall_all || solv->allowuninstallmap.size)
-		    if (autouninstall(solv, solv->problems.elements + oldproblemcount + 1) != 0)
-		      {
-		        solv->problems.count = oldproblemcount;
-		        havedisabled = 1;
-		        break;	/* start over */
-		      }
-		}
-	      solver_disableproblem(solv, v);
-	      havedisabled = 1;
-	      break;	/* start over */
+	      ori = solv->decisionq_why.elements[i];		/* the conflicting rule */
+	      assert(ori > 0);
 	    }
 
-	  assert(solv->decisionq_why.elements[i] > 0);
-
 	  /*
-	   * conflict with a pkg rule ?
-	   */
-	  if (solv->decisionq_why.elements[i] < solv->pkgrules_end)
+           * record the problem
+           */
+	  doautouninstall = 0;
+	  oldproblemcount = solv->problems.count;
+	  queue_push(&solv->problems, 0);			/* start problem */
+	  if (ori < solv->pkgrules_end)
 	    {
-	      if (record_proof)
-		{
-		  queue_push(&solv->problems, solv->learnt_pool.count);
-		  queue_push(&solv->learnt_pool, ri);
-		  queue_push(&solv->learnt_pool, solv->decisionq_why.elements[i]);
-		  queue_push(&solv->learnt_pool, 0);
-		}
-	      else
-		queue_push(&solv->problems, 0);
+	      /* easy: conflict with system solvable or pkg rule */
 	      assert(v > 0 || v == -SYSTEMSOLVABLE);
-	      POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "conflict with pkg rule, disabling rule #%d\n", ri);
-	      if (ri >= solv->jobrules && ri < solv->jobrules_end)
-		v = -(solv->ruletojob.elements[ri - solv->jobrules] + 1);
-	      else
-		v = ri;
-	      queue_push(&solv->problems, v);
-	      queue_push(&solv->problems, 0);
-	      if (v >= solv->featurerules && v < solv->updaterules_end)
+	      IF_POOLDEBUG (SOLV_DEBUG_UNSOLVABLE)
 		{
-		  if (solv->allowuninstall || solv->allowuninstall_all || solv->allowuninstallmap.size)
-		    if (autouninstall(solv, solv->problems.elements + oldproblemcount + 1) != 0)
-		      {
-		        solv->problems.count = oldproblemcount;
-		        havedisabled = 1;
-		        break;	/* start over */
-		      }
+		  if (ori)
+		    POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "conflict with pkg rule, disabling rule #%d\n", ri);
+		  else
+		    POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "conflict with system solvable, disabling rule #%d\n", ri);
+		  solver_printruleclass(solv, SOLV_DEBUG_UNSOLVABLE, solv->rules + ri);
+		  if (ori)
+		    solver_printruleclass(solv, SOLV_DEBUG_UNSOLVABLE, solv->rules + ori);
 		}
-	      solver_disableproblem(solv, v);
-	      havedisabled = 1;
-	      break;	/* start over */
-	    }
-
-	  /*
-	   * conflict with another job or update/feature rule
-	   */
-
-	  /* record proof */
-	  if (record_proof)
-	    {
-	      queue_push(&solv->problems, solv->learnt_pool.count);
-	      queue_push(&solv->learnt_pool, ri);
-	      queue_push(&solv->learnt_pool, solv->decisionq_why.elements[i]);
-	      queue_push(&solv->learnt_pool, 0);
+	      solver_recordproblem(solv, ri);
+	      if (ri >= solv->featurerules && ri < solv->updaterules_end)
+		doautouninstall = 1;
 	    }
 	  else
-	    queue_push(&solv->problems, 0);
-
-	  POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "conflicting update/job assertions over literal %d\n", vv);
-
-	  /*
-	   * push all of our rules (can only be feature or job rules)
-	   * asserting this literal on the problem stack
-	   */
-	  for (i = solv->featurerules, rr = solv->rules + i; i < solv->learntrules; i++, rr++)
 	    {
-	      if (rr->d < 0                          /* disabled */
-		  || rr->w2)                         /*  or no assertion */
-		continue;
-	      if (rr->p != vv                        /* not affecting the literal */
-		  && rr->p != -vv)
-		continue;
-	      if (solv->weakrulemap.size && MAPTST(&solv->weakrulemap, i))     /* weak: silently ignore */
-		continue;
-		
-	      POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, " - disabling rule #%d\n", i);
-	      solver_printruleclass(solv, SOLV_DEBUG_UNSOLVABLE, solv->rules + i);
-		
-	      v = i;
-	      if (i >= solv->jobrules && i < solv->jobrules_end)
-		v = -(solv->ruletojob.elements[i - solv->jobrules] + 1);
-	      queue_push(&solv->problems, v);
+	      POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "conflicting update/job assertions over literal %d\n", vv);
+	      /*
+	       * push all of our rules (can only be feature or job rules)
+	       * asserting this literal on the problem stack
+	       */
+	      for (i = solv->pkgrules_end, rr = solv->rules + i; i < solv->learntrules; i++, rr++)
+		{
+		  if (rr->d < 0                          /* disabled */
+		      || rr->w2)                         /*  or no assertion */
+		    continue;
+		  if (rr->p != vv                        /* not affecting the literal */
+		      && rr->p != -vv)
+		    continue;
+		  if (solv->weakrulemap.size && MAPTST(&solv->weakrulemap, i))     /* weak: silently ignore */
+		    continue;
+		    
+		  POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, " - disabling rule #%d\n", i);
+		  solver_printruleclass(solv, SOLV_DEBUG_UNSOLVABLE, solv->rules + i);
+		  solver_recordproblem(solv, i);
+		  if (i >= solv->featurerules && i < solv->updaterules_end)
+		    doautouninstall = 1;
+		}
 	    }
-	  queue_push(&solv->problems, 0);
+	  queue_push(&solv->problems, 0);			/* finish problem */
 
-	  if (solv->allowuninstall || solv->allowuninstall_all || solv->allowuninstallmap.size)
-	    if (autouninstall(solv, solv->problems.elements + oldproblemcount + 1) != 0)
-	      {
-	        solv->problems.count = oldproblemcount;
-	        havedisabled = 1;
-	        break;	/* start over */
-	      }
+	  /* try autouninstall if requested */
+	  if (doautouninstall)
+	    {
+	      if (solv->allowuninstall || solv->allowuninstall_all || solv->allowuninstallmap.size)
+		if (solver_autouninstall(solv, oldproblemcount) != 0)
+		  {
+		    solv->problems.count = oldproblemcount;
+		    havedisabled = 1;
+		    break;	/* start over */
+		  }
+	    }
 
-	  for (i = oldproblemcount + 1; i < solv->problems.count - 1; i++)
-	    solver_disableproblem(solv, solv->problems.elements[i]);
+	  /* record the proof if requested */
+	  if (record_proof)
+	    {
+	      solv->problems.elements[oldproblemcount] = solv->learnt_pool.count;
+	      queue_push(&solv->learnt_pool, ri);
+	      if (ori)
+		queue_push(&solv->learnt_pool, ori);
+	      queue_push(&solv->learnt_pool, 0);
+	    }
+
+	  if (!disablerules)
+	    {
+	      POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "UNSOLVABLE\n");
+	      return -1;
+	    }
+	  /* disable all problem rules */
+	  solver_disableproblemset(solv, oldproblemcount);
 	  havedisabled = 1;
 	  break;	/* start over */
 	}
@@ -599,21 +326,15 @@ makeruledecisions(Solver *solv)
 	    continue;
 
 	  POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "assertion conflict, but I am weak, disabling ");
-	  solver_printrule(solv, SOLV_DEBUG_UNSOLVABLE, r);
-
-	  if (ri >= solv->jobrules && ri < solv->jobrules_end)
-	    v = -(solv->ruletojob.elements[ri - solv->jobrules] + 1);
-	  else
-	    v = ri;
-	  solver_disableproblem(solv, v);
-	  if (v < 0)
-	    solver_reenablepolicyrules(solv, -v);
+	  solver_printruleclass(solv, SOLV_DEBUG_UNSOLVABLE, r);
+	  solver_fixproblem(solv, ri);
 	  havedisabled = 1;
 	  break;	/* start over */
 	}
       if (ii == solv->ruleassertions.count)
 	break;	/* finished! */
     }
+  return 1;		/* the new level */
 }
 
 
@@ -1110,6 +831,35 @@ solver_reset(Solver *solv)
   enabledisablelearntrules(solv);
 }
 
+static inline int
+queue_contains(Queue *q, Id id)
+{
+  int i;
+  for (i = 0; i < q->count; i++)
+    if (q->elements[i] == id)
+      return 1;
+  return 0;
+}
+
+static void
+disable_recommendsrules(Solver *solv, Queue *weakq)
+{
+  Pool *pool = solv->pool;
+  int i;
+  for (i = 0; i < weakq->count; i++)
+    {
+      Rule *r;
+      if (!queue_contains(solv->recommendsruleq, weakq->elements[i]))
+	continue;
+      r = solv->rules + weakq->elements[i];
+      if (r->d >= 0)
+	{
+	  POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "disabling ");
+	  solver_printruleclass(solv, SOLV_DEBUG_UNSOLVABLE, r);
+	  solver_disablerule(solv, r);
+	}
+    }
+}
 
 /*-------------------------------------------------------------------
  *
@@ -1119,7 +869,7 @@ solver_reset(Solver *solv)
  */
 
 static void
-analyze_unsolvable_rule(Solver *solv, Rule *r, Id *lastweakp, Map *rseen)
+analyze_unsolvable_rule(Solver *solv, Rule *r, Queue *weakq, Map *rseen)
 {
   Pool *pool = solv->pool;
   int i;
@@ -1134,42 +884,14 @@ analyze_unsolvable_rule(Solver *solv, Rule *r, Id *lastweakp, Map *rseen)
       MAPSET(rseen, why - solv->learntrules);
       for (i = solv->learnt_why.elements[why - solv->learntrules]; solv->learnt_pool.elements[i]; i++)
 	if (solv->learnt_pool.elements[i] > 0)
-	  analyze_unsolvable_rule(solv, solv->rules + solv->learnt_pool.elements[i], lastweakp, rseen);
+	  analyze_unsolvable_rule(solv, solv->rules + solv->learnt_pool.elements[i], weakq, rseen);
       return;
     }
-  if (solv->weakrulemap.size && MAPTST(&solv->weakrulemap, why))
-    if (!*lastweakp || why > *lastweakp)
-      *lastweakp = why;
-  /* do not add pkg rules to problem */
-  if (why < solv->pkgrules_end)
-    return;
-  /* turn rule into problem */
-  if (why >= solv->jobrules && why < solv->jobrules_end)
-    why = -(solv->ruletojob.elements[why - solv->jobrules] + 1);
-  /* normalize dup/infarch rules */
-  if (why > solv->infarchrules && why < solv->infarchrules_end)
-    {
-      Id name = pool->solvables[-solv->rules[why].p].name;
-      while (why > solv->infarchrules && pool->solvables[-solv->rules[why - 1].p].name == name)
-	why--;
-    }
-  if (why > solv->duprules && why < solv->duprules_end)
-    {
-      Id name = pool->solvables[-solv->rules[why].p].name;
-      while (why > solv->duprules && pool->solvables[-solv->rules[why - 1].p].name == name)
-	why--;
-    }
-
-  /* return if problem already countains our rule */
-  if (solv->problems.count)
-    {
-      for (i = solv->problems.count - 1; i >= 0; i--)
-	if (solv->problems.elements[i] == 0)	/* end of last problem reached? */
-	  break;
-	else if (solv->problems.elements[i] == why)
-	  return;
-    }
-  queue_push(&solv->problems, why);
+  if (solv->weakrulemap.size && MAPTST(&solv->weakrulemap, why) && weakq)
+    queue_push(weakq, why);
+  /* add non-pkg rules to problem and disable */
+  if (why >= solv->pkgrules_end)
+    solver_recordproblem(solv, why);
 }
 
 
@@ -1200,12 +922,12 @@ analyze_unsolvable(Solver *solv, Rule *cr, int disablerules)
   Rule *r;
   Map involved;		/* global to speed things up? */
   Map rseen;
+  Queue weakq;
   Id pp, v, vv, why;
   int i, idx;
   Id *decisionmap = solv->decisionmap;
   int oldproblemcount;
   int oldlearntpoolcount;
-  Id lastweak;
   int record_proof = 1;
 
   POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "ANALYZE UNSOLVABLE ----------------------\n");
@@ -1221,10 +943,10 @@ analyze_unsolvable(Solver *solv, Rule *cr, int disablerules)
   r = cr;
   map_init(&involved, pool->nsolvables);
   map_init(&rseen, solv->learntrules ? solv->nrules - solv->learntrules : 0);
+  queue_init(&weakq);
   if (record_proof)
     queue_push(&solv->learnt_pool, r - solv->rules);
-  lastweak = 0;
-  analyze_unsolvable_rule(solv, r, &lastweak, &rseen);
+  analyze_unsolvable_rule(solv, r, &weakq, &rseen);
   FOR_RULELITERALS(v, pp, r)
     {
       if (DECISIONMAP_TRUE(v))	/* the one true literal */
@@ -1244,7 +966,7 @@ analyze_unsolvable(Solver *solv, Rule *cr, int disablerules)
       if (record_proof)
         queue_push(&solv->learnt_pool, why);
       r = solv->rules + why;
-      analyze_unsolvable_rule(solv, r, &lastweak, &rseen);
+      analyze_unsolvable_rule(solv, r, &weakq, &rseen);
       FOR_RULELITERALS(v, pp, r)
 	{
 	  if (DECISIONMAP_TRUE(v))	/* the one true literal */
@@ -1257,28 +979,37 @@ analyze_unsolvable(Solver *solv, Rule *cr, int disablerules)
   map_free(&rseen);
   queue_push(&solv->problems, 0);	/* mark end of this problem */
 
-  if (lastweak)
+  if (weakq.count)
     {
-      /* disable last weak rule */
+      Id lastweak;
+      /* revert problems */
       solv->problems.count = oldproblemcount;
       solv->learnt_pool.count = oldlearntpoolcount;
-      if (lastweak >= solv->jobrules && lastweak < solv->jobrules_end)
-	v = -(solv->ruletojob.elements[lastweak - solv->jobrules] + 1);
-      else
-        v = lastweak;
+      /* find last weak */
+      lastweak = 0;
+      for (i = 0; i < weakq.count; i++)
+	if (weakq.elements[i] > lastweak)
+	  lastweak = weakq.elements[i];
+      if (lastweak < solv->pkgrules_end && solv->strongrecommends && solv->recommendsruleq && queue_contains(solv->recommendsruleq, lastweak))
+	{
+	  disable_recommendsrules(solv, &weakq);
+	  queue_free(&weakq);
+	  solver_reset(solv);
+	  return 0;
+	}
+      queue_free(&weakq);
       POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "disabling ");
       solver_printruleclass(solv, SOLV_DEBUG_UNSOLVABLE, solv->rules + lastweak);
       if (lastweak >= solv->choicerules && lastweak < solv->choicerules_end)
 	solver_disablechoicerules(solv, solv->rules + lastweak);
-      solver_disableproblem(solv, v);
-      if (v < 0)
-	solver_reenablepolicyrules(solv, -v);
+      solver_fixproblem(solv, lastweak);
       solver_reset(solv);
       return 0;
     }
+  queue_free(&weakq);
 
   if (solv->allowuninstall || solv->allowuninstall_all || solv->allowuninstallmap.size)
-    if (autouninstall(solv, solv->problems.elements + oldproblemcount + 1) != 0)
+    if (solver_autouninstall(solv, oldproblemcount) != 0)
       {
 	solv->problems.count = oldproblemcount;
 	solv->learnt_pool.count = oldlearntpoolcount;
@@ -1296,8 +1027,7 @@ analyze_unsolvable(Solver *solv, Rule *cr, int disablerules)
   /* + 2: index + trailing zero */
   if (disablerules && oldproblemcount + 2 < solv->problems.count)
     {
-      for (i = oldproblemcount + 1; i < solv->problems.count - 1; i++)
-        solver_disableproblem(solv, solv->problems.elements[i]);
+      solver_disableproblemset(solv, oldproblemcount);
       /* XXX: might want to enable all weak rules again */
       solver_reset(solv);
       return 0;
@@ -1884,56 +1614,6 @@ resolve_jobrules(Solver *solv, int level, int disablerules, Queue *dq)
   return level;
 }
 
-static int
-cleandeps_check_mistakes(Solver *solv)
-{
-  Pool *pool = solv->pool;
-  Rule *r;
-  Id p, pp;
-  int i;
-  int mademistake = 0;
-
-  if (!solv->cleandepsmap.size)
-    return 0;
-  /* check for mistakes */
-  for (i = solv->installed->start; i < solv->installed->end; i++)
-    {
-      if (!MAPTST(&solv->cleandepsmap, i - solv->installed->start))
-	continue;
-      r = solv->rules + solv->featurerules + (i - solv->installed->start);
-      /* a mistake is when the featurerule is true but the updaterule is false */
-      if (!r->p)
-	continue;
-      FOR_RULELITERALS(p, pp, r)
-	if (p > 0 && solv->decisionmap[p] > 0)
-	  break;
-      if (!p)
-	continue;	/* feature rule is not true */
-      r = solv->rules + solv->updaterules + (i - solv->installed->start);
-      if (!r->p)
-	continue;
-      FOR_RULELITERALS(p, pp, r)
-	if (p > 0 && solv->decisionmap[p] > 0)
-	  break;
-      if (p)
-	continue;	/* update rule is true */
-      POOL_DEBUG(SOLV_DEBUG_SOLVER, "cleandeps mistake: ");
-      solver_printruleclass(solv, SOLV_DEBUG_SOLVER, r);
-      POOL_DEBUG(SOLV_DEBUG_SOLVER, "feature rule: ");
-      solver_printruleclass(solv, SOLV_DEBUG_SOLVER, solv->rules + solv->featurerules + (i - solv->installed->start));
-      if (!solv->cleandeps_mistakes)
-	{
-	  solv->cleandeps_mistakes = solv_calloc(1, sizeof(Queue));
-	  queue_init(solv->cleandeps_mistakes);
-	}
-      queue_push(solv->cleandeps_mistakes, i);
-      MAPCLR(&solv->cleandepsmap, i - solv->installed->start);
-      solver_reenablepolicyrules_cleandeps(solv, i);
-      mademistake = 1;
-    }
-  return mademistake;
-}
-
 static void
 prune_to_update_targets(Solver *solv, Id *cp, Queue *q)
 {
@@ -2280,7 +1960,7 @@ add_complex_recommends(Solver *solv, Id rec, Queue *dq, Map *dqmap)
 	    {
 	      if (solv->decisionmap[p] < 0)
 		continue;
-	      if (solv->dupmap_all && solv->installed && pool->solvables[p].repo == solv->installed && (solv->droporphanedmap_all || (solv->droporphanedmap.size && MAPTST(&solv->droporphanedmap, p - solv->installed->start))))
+	      if (solv->process_orphans && solv->installed && pool->solvables[p].repo == solv->installed && (solv->droporphanedmap_all || (solv->droporphanedmap.size && MAPTST(&solv->droporphanedmap, p - solv->installed->start))))
 		continue;
 	    }
 	  queue_push(dq, p);
@@ -2435,7 +2115,7 @@ resolve_weak(Solver *solv, int level, int disablerules, Queue *dq, Queue *dqs, i
 			}
 		      else if (solv->decisionmap[p] == 0)
 			{
-			  if (solv->dupmap_all && solv->installed && pool->solvables[p].repo == solv->installed && (solv->droporphanedmap_all || (solv->droporphanedmap.size && MAPTST(&solv->droporphanedmap, p - solv->installed->start))))
+			  if (solv->process_orphans && solv->installed && pool->solvables[p].repo == solv->installed && (solv->droporphanedmap_all || (solv->droporphanedmap.size && MAPTST(&solv->droporphanedmap, p - solv->installed->start))))
 			    continue;
 			  queue_pushunique(dq, p);
 			}
@@ -2452,7 +2132,7 @@ resolve_weak(Solver *solv, int level, int disablerules, Queue *dq, Queue *dqs, i
 	    continue;
 	  if (!solver_is_supplementing(solv, s))
 	    continue;
-	  if (solv->dupmap_all && solv->installed && s->repo == solv->installed && (solv->droporphanedmap_all || (solv->droporphanedmap.size && MAPTST(&solv->droporphanedmap, i - solv->installed->start))))
+	  if (solv->process_orphans && solv->installed && s->repo == solv->installed && (solv->droporphanedmap_all || (solv->droporphanedmap.size && MAPTST(&solv->droporphanedmap, i - solv->installed->start))))
 	    continue;
 	  if (solv->isdisfavormap.size && MAPTST(&solv->isdisfavormap, i))
 	    continue;	/* disfavored supplements, do not install */
@@ -2676,6 +2356,35 @@ resolve_weak(Solver *solv, int level, int disablerules, Queue *dq, Queue *dqs, i
   return level;
 }
 
+static int
+resolve_cleandeps(Solver *solv, int level, int disablerules, int *rerunp)
+{
+  Pool *pool = solv->pool;
+  Repo *installed = solv->installed;
+  int olevel;
+  Id p;
+  Solvable *s;
+
+  if (!installed || !solv->cleandepsmap.size)
+    return level;
+  POOL_DEBUG(SOLV_DEBUG_SOLVER, "deciding cleandeps packages\n");
+  for (p = installed->start; p < installed->end; p++)
+    {
+      s = pool->solvables + p;
+      if (s->repo != installed)
+	continue;
+      if (solv->decisionmap[p] != 0 || !MAPTST(&solv->cleandepsmap, p - installed->start))
+	continue;
+      POOL_DEBUG(SOLV_DEBUG_POLICY, "cleandeps erasing %s\n", pool_solvid2str(pool, p));
+      olevel = level;
+      level = setpropagatelearn(solv, level, -p, 0, 0, SOLVER_REASON_CLEANDEPS_ERASE);
+      if (level < olevel)
+	break;
+    }
+  if (p < installed->end)
+    *rerunp = 1;
+  return level;
+}
 
 static int
 resolve_orphaned(Solver *solv, int level, int disablerules, Queue *dq, int *rerunp)
@@ -2805,13 +2514,9 @@ solver_run_sat(Solver *solv, int disablerules, int doweak)
 	{
 	  if (level < 0)
 	    break;
-	  makeruledecisions(solv);
-	  level = 1;
-	  if (!disablerules && solv->problems.count)
-	    {
-	      level = -1;
-	      break;
-	    }
+	  level = makeruledecisions(solv, disablerules);
+	  if (level < 0)
+	    break;
 	  POOL_DEBUG(SOLV_DEBUG_PROPAGATE, "initial propagate (propagate_index: %d;  size decisionq: %d)...\n", solv->propagate_index, solv->decisionq.count);
 	  if ((r = propagate(solv, level)) != 0)
 	    {
@@ -2881,24 +2586,12 @@ solver_run_sat(Solver *solv, int disablerules, int doweak)
 
       /* decide leftover cleandeps packages */
       if (solv->cleandepsmap.size && solv->installed)
-       {
-         for (p = solv->installed->start; p < solv->installed->end; p++)
-           {
-             s = pool->solvables + p;
-             if (s->repo != solv->installed)
-               continue;
-             if (solv->decisionmap[p] == 0 && MAPTST(&solv->cleandepsmap, p - solv->installed->start))
-               {
-                 POOL_DEBUG(SOLV_DEBUG_POLICY, "cleandeps erasing %s\n", pool_solvid2str(pool, p));
-                 olevel = level;
-                 level = setpropagatelearn(solv, level, -p, 0, 0, SOLVER_REASON_CLEANDEPS_ERASE);
-                 if (level < olevel)
-                   break;
-               }
-           }
-         if (p < solv->installed->end)
-           continue;
-       }
+	{
+	  int rerun = 0;
+	  level = resolve_cleandeps(solv, level, disablerules, &rerun);
+	  if (rerun)
+	    continue;
+	}
 
       /* at this point we have a consistent system. now do the extras... */
 
@@ -2938,7 +2631,7 @@ solver_run_sat(Solver *solv, int disablerules, int doweak)
 	    continue;		/* back to main loop */
 	}
 
-      if (solv->installed && solv->cleandepsmap.size && cleandeps_check_mistakes(solv))
+      if (solv->installed && solv->cleandepsmap.size && solver_check_cleandeps_mistakes(solv))
 	{
 	  solver_reset(solv);
 	  level = 0;	/* restart from scratch */
@@ -3248,7 +2941,7 @@ solver_addjobrule(Solver *solv, Id p, Id p2, Id d, Id job, int weak)
 }
 
 static inline void
-add_cleandeps_package(Solver *solv, Id p)
+add_cleandeps_updatepkg(Solver *solv, Id p)
 {
   if (!solv->cleandeps_updatepkgs)
     {
@@ -3287,7 +2980,7 @@ add_update_target(Solver *solv, Id p, Id how)
 	  MAPSET(&solv->bestupdatemap, pi - installed->start);
 	}
       if (how & SOLVER_CLEANDEPS)
-	add_cleandeps_package(solv, pi);
+	add_cleandeps_updatepkg(solv, pi);
       queue_push2(solv->update_targets, pi, p);
       /* check if it's ok to keep the installed package */
       if (s->evr == si->evr && solvable_identical(s, si))
@@ -3316,7 +3009,7 @@ add_update_target(Solver *solv, Id p, Id how)
 		  MAPSET(&solv->bestupdatemap, pi - installed->start);
 		}
 	      if (how & SOLVER_CLEANDEPS)
-		add_cleandeps_package(solv, pi);
+		add_cleandeps_updatepkg(solv, pi);
 	      queue_push2(solv->update_targets, pi, p);
 	    }
 	}
@@ -3528,7 +3221,7 @@ solver_solve(Solver *solv, Queue *job)
   Map installcandidatemap;
   Id how, what, select, name, weak, p, pp, d;
   Queue q;
-  Solvable *s;
+  Solvable *s, *name_s;
   Rule *r;
   int now, solve_start;
   int needduprules = 0;
@@ -3559,7 +3252,7 @@ solver_solve(Solver *solv, Queue *job)
     queue_insertn(&solv->job, 0, pool->pooljobs.count, pool->pooljobs.elements);
   job = &solv->job;
 
-  /* free old stuff in jase we re-run a solver */
+  /* free old stuff in case we re-run a solver */
   queuep_free(&solv->update_targets);
   queuep_free(&solv->cleandeps_updatepkgs);
   queue_empty(&solv->ruleassertions);
@@ -3575,9 +3268,9 @@ solver_solve(Solver *solv, Queue *job)
   map_zerosize(&solv->bestupdatemap);
   solv->fixmap_all = 0;
   map_zerosize(&solv->fixmap);
-  solv->dupmap_all = 0;
   map_zerosize(&solv->dupmap);
   map_zerosize(&solv->dupinvolvedmap);
+  solv->process_orphans = 0;
   solv->droporphanedmap_all = 0;
   map_zerosize(&solv->droporphanedmap);
   solv->allowuninstall_all = 0;
@@ -3639,7 +3332,6 @@ solver_solve(Solver *solv, Queue *job)
     deduceq2addedmap(solv, &addedmap);
   if (solv->nrules != initialnrules)
     solver_shrinkrules(solv, initialnrules);
-  solv->nrules = initialnrules;
   solv->lastpkgrule = 0;
   solv->pkgrules_end = 0;
 
@@ -3676,7 +3368,7 @@ solver_solve(Solver *solv, Queue *job)
 		  if (how & SOLVER_CLEANDEPS)
 		    {
 		      FOR_REPO_SOLVABLES(installed, p, s)
-			add_cleandeps_package(solv, p);
+			add_cleandeps_updatepkg(solv, p);
 		    }
 		}
 	      else if (select == SOLVER_SOLVABLE_REPO)
@@ -3692,7 +3384,7 @@ solver_solve(Solver *solv, Queue *job)
 		      if (how & SOLVER_CLEANDEPS)
 			{
 			  FOR_REPO_SOLVABLES(installed, p, s)
-			    add_cleandeps_package(solv, p);
+			    add_cleandeps_updatepkg(solv, p);
 			}
 		      break;
 		    }
@@ -3722,7 +3414,7 @@ solver_solve(Solver *solv, Queue *job)
 			      MAPSET(&solv->bestupdatemap, p - installed->start);
 			    }
 			  if (how & SOLVER_CLEANDEPS)
-			    add_cleandeps_package(solv, p);
+			    add_cleandeps_updatepkg(solv, p);
 			  targeted = 0;
 			}
 		      if (!targeted || solv->noautotarget)
@@ -3733,7 +3425,7 @@ solver_solve(Solver *solv, Queue *job)
 		}
 	      break;
 	    case SOLVER_DROP_ORPHANED:
-	      if (select == SOLVER_SOLVABLE_ALL || (select == SOLVER_SOLVABLE_REPO && what == installed->repoid))
+	      if (select == SOLVER_SOLVABLE_ALL || (select == SOLVER_SOLVABLE_REPO && installed && what == installed->repoid))
 		solv->droporphanedmap_all = 1;
 	      FOR_JOB_SELECT(p, pp, select, what)
 		{
@@ -3798,17 +3490,9 @@ solver_solve(Solver *solv, Queue *job)
 	    }
 	  break;
 	case SOLVER_DISTUPGRADE:
+	  needduprules = 1;
 	  if (select == SOLVER_SOLVABLE_ALL)
-	    {
-	      solv->dupmap_all = 1;
-	      solv->updatemap_all = 1;
-	      if (how & SOLVER_FORCEBEST)
-		solv->bestupdatemap_all = 1;
-	    }
-	  if ((how & SOLVER_TARGETED) != 0)
-	    needduprules = 1;
-	  if (!solv->dupmap_all || solv->allowuninstall || solv->allowuninstall_all || solv->allowuninstallmap.size || solv->keep_orphans)
-	    needduprules = 1;
+	    solv->process_orphans = 1;
 	  break;
 	default:
 	  break;
@@ -3931,7 +3615,7 @@ solver_solve(Solver *solv, Queue *job)
 	      continue;
 	    }
 	  /* it's also orphaned if the feature rule consists just of the installed package */
-	  if (!solv->dupmap_all && sr->p == i && !sr->d && !sr->w2)
+	  if (!solv->process_orphans && sr->p == i && !sr->d && !sr->w2)
 	    queue_push(&solv->orphaned, i);
 
 	  if (!solver_rulecmp(solv, r, sr))
@@ -4020,6 +3704,7 @@ solver_solve(Solver *solv, Queue *job)
 	    map_grow(&solv->cleandepsmap, installed->end - installed->start);
 	  /* specific solvable: by id or by nevra */
 	  name = (select == SOLVER_SOLVABLE || (select == SOLVER_SOLVABLE_NAME && ISRELDEP(what))) ? 0 : -1;
+	  name_s = 0;
 	  if (select == SOLVER_SOLVABLE_ALL)	/* hmmm ;) */
 	    {
 	      FOR_POOL_SOLVABLES(p)
@@ -4046,7 +3731,10 @@ solver_solve(Solver *solv, Queue *job)
 	    {
 	      s = pool->solvables + p;
 	      if (installed && s->repo == installed)
-		name = !name ? s->name : -1;
+		{
+		  name = !name ? s->name : -1;
+		  name_s = s;
+		}
 	      solver_addjobrule(solv, -p, 0, 0, i, weak);
 	    }
 	  /* special case for "erase a specific solvable": we also
@@ -4069,6 +3757,8 @@ solver_solve(Solver *solv, Queue *job)
 		    continue;
 		  /* keep installcandidates of other jobs */
 		  if (MAPTST(&installcandidatemap, p))
+		    continue;
+		  if (pool->implicitobsoleteusescolors && !pool_colormatch(pool, name_s, s))
 		    continue;
 		  /* don't add the same rule twice */
 		  for (j = oldnrules; j < k; j++)
@@ -4168,22 +3858,11 @@ solver_solve(Solver *solv, Queue *job)
 
   /* now create infarch and dup rules */
   if (!solv->noinfarchcheck)
-    {
-      solver_addinfarchrules(solv, &addedmap);
-#if 0
-      if (pool->implicitobsoleteusescolors)
-	{
-	  /* currently doesn't work well with infarch rules, so make
-           * them weak */
-	  for (i = solv->infarchrules; i < solv->infarchrules_end; i++)
-	    queue_push(&solv->weakruleq, i);
-	}
-#endif
-    }
+    solver_addinfarchrules(solv, &addedmap);
   else
     solv->infarchrules = solv->infarchrules_end = solv->nrules;
 
-  if (needduprules)
+  if (solv->dupinvolvedmap_all || solv->dupinvolvedmap.size)
     solver_addduprules(solv, &addedmap);
   else
     solv->duprules = solv->duprules_end = solv->nrules;
@@ -4196,7 +3875,7 @@ solver_solve(Solver *solv, Queue *job)
   if (solv->bestupdatemap_all || solv->bestupdatemap.size || hasbestinstalljob)
     solver_addbestrules(solv, hasbestinstalljob);
   else
-    solv->bestrules = solv->bestrules_end = solv->nrules;
+    solv->bestrules = solv->bestrules_end = solv->bestrules_up = solv->nrules;
 
   if (needduprules)
     solver_freedupmaps(solv);	/* no longer needed */
@@ -4226,7 +3905,7 @@ solver_solve(Solver *solv, Queue *job)
   map_free(&installcandidatemap);
   queue_free(&q);
 
-  POOL_DEBUG(SOLV_DEBUG_STATS, "%d pkg rules, 2 * %d update rules, %d job rules, %d infarch rules, %d dup rules, %d choice rules, %d best rules\n", solv->pkgrules_end - 1, solv->updaterules_end - solv->updaterules, solv->jobrules_end - solv->jobrules, solv->infarchrules_end - solv->infarchrules, solv->duprules_end - solv->duprules, solv->choicerules_end - solv->choicerules, solv->bestrules_end - solv->bestrules);
+  POOL_DEBUG(SOLV_DEBUG_STATS, "%d pkg rules, 2 * %d update rules, %d job rules, %d infarch rules, %d dup rules, %d choice rules, %d best rules, %d yumobs rules\n", solv->pkgrules_end - 1, solv->updaterules_end - solv->updaterules, solv->jobrules_end - solv->jobrules, solv->infarchrules_end - solv->infarchrules, solv->duprules_end - solv->duprules, solv->choicerules_end - solv->choicerules, solv->bestrules_end - solv->bestrules, solv->yumobsrules_end - solv->yumobsrules);
   POOL_DEBUG(SOLV_DEBUG_STATS, "overall rule memory used: %d K\n", solv->nrules * (int)sizeof(Rule) / 1024);
 
   /* create weak map */
@@ -4274,7 +3953,7 @@ solver_solve(Solver *solv, Queue *job)
   solver_disablepolicyrules(solv);
 
   /* break orphans if requested */
-  if (solv->dupmap_all && solv->orphaned.count && solv->break_orphans)
+  if (solv->process_orphans && solv->orphaned.count && solv->break_orphans)
     solver_breakorphans(solv);
 
   /*
@@ -4309,6 +3988,35 @@ void solver_get_orphaned(Solver *solv, Queue *orphanedq)
 {
   queue_free(orphanedq);
   queue_init_clone(orphanedq, &solv->orphaned);
+}
+
+void solver_get_cleandeps(Solver *solv, Queue *cleandepsq)
+{
+  Pool *pool = solv->pool;
+  Repo *installed = solv->installed;
+  Solvable *s;
+  Rule *r;
+  Id p, pp, pr;
+
+  queue_empty(cleandepsq);
+  if (!installed || !solv->cleandepsmap.size)
+    return;
+  FOR_REPO_SOLVABLES(installed, p, s)
+    {
+      if (!MAPTST(&solv->cleandepsmap, p - installed->start) || solv->decisionmap[p] >= 0)
+	continue;
+      /* now check the update rule */
+      r = solv->rules + solv->updaterules + (p - solv->installed->start);
+      if (r->p)
+	{
+	  FOR_RULELITERALS(pr, pp, r)
+	    if (solv->decisionmap[pr] > 0)
+	      break;
+	  if (pr)
+	    continue;
+	}
+      queue_push(cleandepsq, p);
+    }
 }
 
 void solver_get_recommendations(Solver *solv, Queue *recommendationsq, Queue *suggestionsq, int noselected)
@@ -4681,7 +4389,7 @@ solver_describe_weakdep_decision(Solver *solv, Id p, Queue *whyq)
   for (i = 1; i < pool->nsolvables; i++)
     {
       Id *recp, rec, pp2, p2;
-      if (solv->decisionmap[i] < 0 || solv->decisionmap[i] >= level)
+      if (solv->decisionmap[i] <= 0 || solv->decisionmap[i] >= level)
 	continue;
       s = pool->solvables + i;
       if (!s->recommends)
@@ -4832,351 +4540,6 @@ pool_isemptyupdatejob(Pool *pool, Id how, Id what)
 	}
     }
   return 1;
-}
-
-static int
-get_userinstalled_cmp(const void *ap, const void *bp, void *dp)
-{
-  return *(Id *)ap - *(Id *)bp;
-}
-
-static int
-get_userinstalled_cmp_names(const void *ap, const void *bp, void *dp)
-{
-  Pool *pool = dp;
-  return strcmp(pool_id2str(pool, *(Id *)ap), pool_id2str(pool, *(Id *)bp));
-}
-
-static int
-get_userinstalled_cmp_namearch(const void *ap, const void *bp, void *dp)
-{
-  Pool *pool = dp;
-  int r;
-  r = strcmp(pool_id2str(pool, ((Id *)ap)[0]), pool_id2str(pool, ((Id *)bp)[0]));
-  if (r)
-    return r;
-  return strcmp(pool_id2str(pool, ((Id *)ap)[1]), pool_id2str(pool, ((Id *)bp)[1]));
-}
-
-static void
-get_userinstalled_sort_uniq(Pool *pool, Queue *q, int flags)
-{
-  Id lastp = -1, lasta = -1;
-  int i, j;
-  if (q->count < ((flags & GET_USERINSTALLED_NAMEARCH) ? 4 : 2))
-    return;
-  if ((flags & GET_USERINSTALLED_NAMEARCH) != 0)
-    solv_sort(q->elements, q->count / 2, 2 * sizeof(Id), get_userinstalled_cmp_namearch, pool);
-  else if ((flags & GET_USERINSTALLED_NAMES) != 0)
-    solv_sort(q->elements, q->count, sizeof(Id), get_userinstalled_cmp_names, pool);
-  else
-    solv_sort(q->elements, q->count, sizeof(Id), get_userinstalled_cmp, 0);
-  if ((flags & GET_USERINSTALLED_NAMEARCH) != 0)
-    {
-      for (i = j = 0; i < q->count; i += 2)
-	if (q->elements[i] != lastp || q->elements[i + 1] != lasta)
-	  {
-	    q->elements[j++] = lastp = q->elements[i];
-	    q->elements[j++] = lasta = q->elements[i + 1];
-	  }
-    }
-  else
-    {
-      for (i = j = 0; i < q->count; i++)
-	if (q->elements[i] != lastp)
-	  q->elements[j++] = lastp = q->elements[i];
-    }
-  queue_truncate(q, j);
-}
-
-static void
-namearch2solvables(Pool *pool, Queue *q, Queue *qout, int job)
-{
-  int i;
-  if (!pool->installed)
-    return;
-  for (i = 0; i < q->count; i += 2)
-    {
-      Id p, pp, name = q->elements[i], arch = q->elements[i + 1];
-      FOR_PROVIDES(p, pp, name)
-	{
-	  Solvable *s = pool->solvables + p;
-	  if (s->repo != pool->installed || s->name != name || (arch && s->arch != arch))
-	    continue;
-	  if (job)
-	    queue_push(qout, job);
-	  queue_push(qout, p);
-	}
-    }
-}
-
-void
-solver_get_userinstalled(Solver *solv, Queue *q, int flags)
-{
-  Pool *pool = solv->pool;
-  Id p, p2, pp;
-  Solvable *s;
-  Repo *installed = solv->installed;
-  int i, j;
-  Map userinstalled;
-  
-  map_init(&userinstalled, 0);
-  queue_empty(q);
-  /* first process jobs */
-  for (i = 0; i < solv->job.count; i += 2)
-    {
-      Id how = solv->job.elements[i];
-      Id what, select;
-      if (installed && (how & SOLVER_JOBMASK) == SOLVER_USERINSTALLED)
-	{
-	  if (!userinstalled.size)
-	    map_grow(&userinstalled, installed->end - installed->start);
-	  what = solv->job.elements[i + 1];
-	  select = how & SOLVER_SELECTMASK;
-	  if (select == SOLVER_SOLVABLE_ALL || (select == SOLVER_SOLVABLE_REPO && what == installed->repoid))
-	    {
-	      FOR_REPO_SOLVABLES(installed, p, s)
-	        MAPSET(&userinstalled, p - installed->start);
-	    }
-	  FOR_JOB_SELECT(p, pp, select, what)
-	    if (pool->solvables[p].repo == installed)
-	      MAPSET(&userinstalled, p - installed->start);
-	  continue;
-	}
-      if ((how & SOLVER_JOBMASK) != SOLVER_INSTALL)
-	continue;
-      if ((how & SOLVER_NOTBYUSER) != 0)
-	continue;
-      what = solv->job.elements[i + 1];
-      select = how & SOLVER_SELECTMASK;
-      FOR_JOB_SELECT(p, pp, select, what)
-        if (solv->decisionmap[p] > 0)
-	  {
-	    queue_push(q, p);
-#ifdef ENABLE_LINKED_PKGS
-	    if (has_package_link(pool, pool->solvables + p))
-	      {
-		int j;
-		Queue lq;
-		queue_init(&lq);
-		find_package_link(pool, pool->solvables + p, 0, &lq, 0, 0);
-		for (j = 0; j < lq.count; j++)
-		  if (solv->decisionmap[lq.elements[j]] > 0)
-		    queue_push(q, lq.elements[j]);
-	      }
-#endif
-	  }
-    }
-  /* now process updates of userinstalled packages */
-  if (installed && userinstalled.size)
-    {
-      for (i = 1; i < solv->decisionq.count; i++)
-	{
-	  p = solv->decisionq.elements[i];
-	  if (p <= 0)
-	    continue;
-	  s = pool->solvables + p;
-	  if (!s->repo)
-	    continue;
-	  if (s->repo == installed)
-	    {
-	      if (MAPTST(&userinstalled, p - installed->start))
-		queue_push(q, p);
-	      continue;
-	    }
-	  /* new package, check if we replace a userinstalled one */
-	  FOR_PROVIDES(p2, pp, s->name)
-	    {
-	      Solvable *ps = pool->solvables + p2;
-	      if (p2 == p || ps->repo != installed || !MAPTST(&userinstalled, p2 - installed->start))
-		continue;
-	      if (!pool->implicitobsoleteusesprovides && s->name != ps->name)
-		continue;
-	      if (pool->implicitobsoleteusescolors && !pool_colormatch(pool, s, ps))
-		continue;
-	      queue_push(q, p);
-	      break;
-	    }
-	  if (!p2 && s->repo != installed && s->obsoletes)
-	    {
-	      Id obs, *obsp = s->repo->idarraydata + s->obsoletes;
-	      while ((obs = *obsp++) != 0)
-		{
-		  FOR_PROVIDES(p2, pp, obs)
-		    {
-		      Solvable *ps = pool->solvables + p2;
-		      if (p2 == p || ps->repo != installed || !MAPTST(&userinstalled, p2 - installed->start))
-			continue;
-		      if (!pool->obsoleteusesprovides && !pool_match_nevr(pool, ps, obs))
-			continue;
-		      if (pool->obsoleteusescolors && !pool_colormatch(pool, s, ps)) 
-			continue;
-		      queue_push(q, p); 
-		      break;
-		    }
-		  if (p2)
-		    break;
-		}
-	    }
-	}
-    }
-  map_free(&userinstalled);
-
-  /* convert to desired output format */
-  if ((flags & GET_USERINSTALLED_NAMEARCH) != 0)
-    {
-      int qcount = q->count;
-      queue_insertn(q, 0, qcount, 0);
-      for (i = j = 0; i < qcount; i++)
-	{
-	  s = pool->solvables + q->elements[i + qcount];
-	  q->elements[j++] = s->name;
-	  q->elements[j++] = s->arch;
-	}
-    }
-  else if ((flags & GET_USERINSTALLED_NAMES) != 0)
-    {
-      for (i = 0; i < q->count; i++)
-	{
-	  s = pool->solvables + q->elements[i];
-	  q->elements[i] = s->name;
-	}
-    }
-  /* sort and unify */
-  get_userinstalled_sort_uniq(pool, q, flags);
-
-  /* invert if asked for */
-  if ((flags & GET_USERINSTALLED_INVERTED) != 0)
-    {
-      /* first generate queue with all installed packages */
-      Queue invq;
-      queue_init(&invq);
-      for (i = 1; i < solv->decisionq.count; i++)
-	{
-	  p = solv->decisionq.elements[i];
-	  if (p <= 0)
-	    continue;
-	  s = pool->solvables + p;
-	  if (!s->repo)
-	    continue;
-	  if ((flags & GET_USERINSTALLED_NAMEARCH) != 0)
-	    queue_push2(&invq, s->name, s->arch);
-	  else if ((flags & GET_USERINSTALLED_NAMES) != 0)
-	    queue_push(&invq, s->name);
-	  else
-	    queue_push(&invq, p);
-	}
-      /* push q on invq, just in case... */
-      queue_insertn(&invq, invq.count, q->count, q->elements);
-      get_userinstalled_sort_uniq(pool, &invq, flags);
-      /* subtract queues (easy as they are sorted and invq is a superset of q) */
-      if ((flags & GET_USERINSTALLED_NAMEARCH) != 0)
-	{
-	  if (q->count)
-	    {
-	      for (i = j = 0; i < invq.count; i += 2)
-		if (invq.elements[i] == q->elements[j] && invq.elements[i + 1] == q->elements[j + 1])
-		  {
-		    invq.elements[i] = invq.elements[i + 1] = 0;
-		    j += 2;
-		    if (j >= q->count)
-		      break;
-		  }
-	      queue_empty(q);
-	    }
-	  for (i = 0; i < invq.count; i += 2)
-	    if (invq.elements[i])
-	      queue_push2(q, invq.elements[i], invq.elements[i + 1]);
-	}
-      else
-	{
-	  if (q->count)
-	    {
-	      for (i = j = 0; i < invq.count; i++)
-		if (invq.elements[i] == q->elements[j])
-		  {
-		    invq.elements[i] = 0;
-		    if (++j >= q->count)
-		      break;
-		  }
-	      queue_empty(q);
-	    }
-	  for (i = 0; i < invq.count; i++)
-	    if (invq.elements[i])
-	      queue_push(q, invq.elements[i]);
-	}
-      queue_free(&invq);
-    }
-}
-
-void
-pool_add_userinstalled_jobs(Pool *pool, Queue *q, Queue *job, int flags)
-{
-  int i;
-
-  if ((flags & GET_USERINSTALLED_INVERTED) != 0)
-    {
-      Queue invq;
-      Id p, lastid;
-      Solvable *s;
-      int bad;
-      if (!pool->installed)
-	return;
-      queue_init(&invq);
-      if ((flags & GET_USERINSTALLED_NAMEARCH) != 0)
-	flags &= ~GET_USERINSTALLED_NAMES;	/* just in case */
-      FOR_REPO_SOLVABLES(pool->installed, p, s)
-	queue_push(&invq, flags & GET_USERINSTALLED_NAMES ? s->name : p);
-      if ((flags & GET_USERINSTALLED_NAMEARCH) != 0)
-	{
-	  /* for namearch we convert to packages */
-	  namearch2solvables(pool, q, &invq, 0);
-	  get_userinstalled_sort_uniq(pool, &invq, flags);
-	  namearch2solvables(pool, q, &invq, 0);
-	  flags = 0;
-	}
-      else
-	{
-	  queue_insertn(&invq, invq.count, q->count, q->elements);
-	  get_userinstalled_sort_uniq(pool, &invq, flags);
-	  /* now the fun part, add q again, sort, and remove all dups */
-	  queue_insertn(&invq, invq.count, q->count, q->elements);
-	}
-      if (invq.count > 1)
-	{
-	  if ((flags & GET_USERINSTALLED_NAMES) != 0)
-	    solv_sort(invq.elements, invq.count, sizeof(Id), get_userinstalled_cmp_names, pool);
-	  else
-	    solv_sort(invq.elements, invq.count, sizeof(Id), get_userinstalled_cmp, 0);
-	}
-      lastid = -1;
-      bad = 1;
-      for (i = 0; i < invq.count; i++)
-	{
-	  if (invq.elements[i] == lastid)
-	    {
-	      bad = 1;
-	      continue;
-	    }
-	  if (!bad)
-	    queue_push2(job, SOLVER_USERINSTALLED | (flags & GET_USERINSTALLED_NAMES ? SOLVER_SOLVABLE_NAME : SOLVER_SOLVABLE), lastid);
-	  bad = 0;
-	  lastid = invq.elements[i];
-	}
-      if (!bad)
-	queue_push2(job, SOLVER_USERINSTALLED | (flags & GET_USERINSTALLED_NAMES ? SOLVER_SOLVABLE_NAME : SOLVER_SOLVABLE), lastid);
-      queue_free(&invq);
-    }
-  else
-    {
-      if (flags & GET_USERINSTALLED_NAMEARCH)
-	namearch2solvables(pool, q, job, SOLVER_USERINSTALLED | SOLVER_SOLVABLE);
-      else
-	{
-	  for (i = 0; i < q->count; i++)
-	    queue_push2(job, SOLVER_USERINSTALLED | (flags & GET_USERINSTALLED_NAMES ? SOLVER_SOLVABLE_NAME : SOLVER_SOLVABLE), q->elements[i]);
-	}
-    }
 }
 
 int

@@ -334,8 +334,6 @@ SOLV_1.0 {
 		solver_create_transaction;
 		solver_describe_decision;
 		solver_describe_weakdep_decision;
-		solver_disableproblem;
-		solver_enableproblem;
 		solver_findallproblemrules;
 		solver_findproblemrule;
 		solver_free;
@@ -422,3 +420,14 @@ SOLV_1.0 {
 	local:
 		*;
 };
+
+SOLV_1.1 {
+		pool_best_solvables;
+		solver_get_cleandeps;
+} SOLV_1.0;
+
+SOLV_1.2 {
+		map_invertall;
+		pool_set_whatprovides;
+		selection_subtract;
+} SOLV_1.1;

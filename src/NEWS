@@ -2,6 +2,58 @@
 This file contains the major changes between
 libsolv versions:
 
+Version 0.6.34
+- new features:
+  * also look at suggests for package ordering
+
+Version 0.6.33
+- new features:
+  * new Selection.clone() method in the bindings
+  * new pool.parserpmrichdep() method in the bindings
+
+Version 0.6.32
+- fixed bug that could make fileconflict detection very slow
+  in some cases
+
+Version 0.6.31
+- new configuration options:
+  * ENABLE_RPMDB_LIBRPM: use librpm to read the package
+    database
+  * ENABLE_RPMPKG_LIBRPM: use librpm to access information
+    from package headers
+- new features:
+  * new pool_set_whatprovides function to manually change
+    the whatprovides data
+  * new selection_subtract function to remove packages of
+    one selection from another selection
+  * new selection flags SELECTION_FILTER,
+    SELECTION_WITH_DISABLED and SELECTION_WITH_BADARCH
+  * new map_invertall function to invert a bitmap
+  * new map_clr_at function to clear some bits
+
+Version 0.6.30
+- new features:
+  * many fixes and extenstions for cleandeps, e.g.
+    cleandeps now works for "update all packages"
+  * support debian packages with xz compressed control.tar
+  * always create dup rules for "distupgrade" jobs
+  * use recommends also for ordering packages
+
+Version 0.6.29
+- new features:
+  * support for REL_WITHOUT and REL_UNLESS dependencies
+  * solver_get_recommendations available in bindings
+
+Version 0.6.28
+- new features:
+  * new pool_best_solvables() function
+
+Version 0.6.27
+- new features:
+  * allow building with libxml2 instead of libexpat
+  * better handing of "forcebest with uninstall"
+  * speed improvements for "name = md5sum" dependencies
+
 Version 0.6.26
 - export solvable_matchesdep function, as we now
   use it in the bindings

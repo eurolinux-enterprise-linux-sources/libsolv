@@ -34,12 +34,15 @@
 
 Name:           lib%{libname}
 Version:        0.6.34
-Release:        2%{?dist}
+Release:        4%{?dist}
 Summary:        Package dependency solver
 
 License:        BSD
 URL:            https://github.com/openSUSE/libsolv
 Source0:        %{url}/archive/%{version}/%{name}-%{version}.tar.gz
+Patch0001:      0001-Make-sure-that-targeted-updates-dont-do-reinstalls.patch
+Patch0002:      0002-Fix-testsolv-segfault.patch
+Patch0003:      0003-Fix-testsolv-segfaults.patch
 
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
@@ -273,6 +276,18 @@ mv %{buildroot}%{_bindir}/repo2solv{.sh,}
 %endif
 
 %changelog
+* Wed Mar 27 2019 Michal Domonkos <mdomonko@redhat.com> - 0.6.34-4
+- Polish the changelog
+
+* Thu Mar 21 2019 Jaroslav Mracek <jmracek@redhat.com> - 0.6.34-3
+- Make sure that targeted updates don't do reinstalls
+- Resolves: bug#1668256
+- Fix NULL pointer dereference (CVE-2018-20532, CVE-2018-20533)
+- Resolves: bug#1669562
+- Resolves: bug#1669576
+- Fix illegal address access in pool_whatprovides (CVE-2018-20534)
+- Resolves: bug#1670453
+
 * Wed Jun 20 2018 Igor Gnatenko <ignatenko@redhat.com> - 0.6.34-2
 - Add changelog
 
